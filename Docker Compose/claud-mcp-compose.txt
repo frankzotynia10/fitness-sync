@@ -1,0 +1,12 @@
+services:
+  claude-mcp:
+    build: /mnt/user/appdata/fitness-sync/claude-mcp
+    image: claude-mcp:latest
+    container_name: claude-mcp
+    restart: unless-stopped
+    ports:
+      - "4443:8000"
+    env_file:
+      - /mnt/user/appdata/fitness-sync/claude-mcp/.env
+    environment:
+      TZ: America/New_York

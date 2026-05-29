@@ -1,0 +1,6 @@
+# run this command from the respecitve appdata folder
+
+docker build --no-cache -t claude-mcp:latest . 
+docker build --no-cache -t strava-sync:latest .
+docker build --no-cache -t garmin-sync:latest .
+docker build --no-cache -t hevy-sync:latest .   
