@@ -875,17 +875,153 @@ def get_recent_power_curve(limit: int = 10) -> list:
 def get_activity_best_efforts(strava_activity_id: int) -> dict:
     """
     Return best-effort summary for a specific ride.
+    Prefers the persisted activity_best_efforts table if present,
+    otherwise falls back to strava_activity_best_efforts view.
     """
-    if not relation_exists("strava_activity_best_efforts"):
-        return {"message": "strava_activity_best_efforts view does not exist yet."}
+    if dataset_exists("activity_best_efforts"):
+        sql_text = """
+        select
+            source,
+            activity_id,
+            window_sec,
+            best_avg_power_w,
+            computed_at
+        from activity_best_efforts
+        where activity_id = %s
+        order by window_sec
+        """
+        rows = run_query(sql_text, (strava_activity_id,))
+        if rows:
+            return {
+                "strava_activity_id": strava_activity_id,
+                "best_efforts": rows
+            }
+
+    if relation_exists("strava_activity_best_efforts"):
+        sql_text = """
+        select *
+        from strava_activity_best_efforts
+        where strava_activity_id = %s
+        limit 1
+        """
+        return run_query_one(sql_text, (strava_activity_id,))
+
+    return {
+        "message": "Neither activity_best_efforts table nor strava_activity_best_efforts view exists yet."
+    }
+
+
+@mcp.tool()
+def get_activity_best_efforts_persisted(activity_id: int) -> list:
+    """
+    Return persisted best-effort power rows for one activity from activity_best_efforts.
+    """
+    if not dataset_exists("activity_best_efforts"):
+        return [{"message": "activity_best_efforts table does not exist yet."}]
 
     sql_text = """
-    select *
-    from strava_activity_best_efforts
-    where strava_activity_id = %s
-    limit 1
+    select
+        source,
+        activity_id,
+        window_sec,
+        best_avg_power_w,
+        computed_at
+    from activity_best_efforts
+    where activity_id = %s
+    order by window_sec
     """
-    return run_query_one(sql_text, (strava_activity_id,))
+    return run_query(sql_text, (activity_id,))
+
+
+@mcp.tool()
+def get_peak_power_history(window_sec: int = 1200, limit: int = 20) -> list:
+    """
+    Return recent peak power history for a specific duration window.
+    Common windows:
+      5 = 5s
+      60 = 1m
+      300 = 5m
+      1200 = 20m
+    """
+    if not dataset_exists("activity_best_efforts"):
+        return [{"message": "activity_best_efforts table does not exist yet."}]
+
+    limit = clamp_limit(limit, 1, 100)
+
+    sql_text = """
+    select
+        source,
+        activity_id,
+        window_sec,
+        best_avg_power_w,
+        computed_at
+    from activity_best_efforts
+    where window_sec = %s
+    order by computed_at desc
+    limit %s
+    """
+    return run_query(sql_text, (window_sec, limit))
+
+
+@mcp.tool()
+def get_recent_best_power_for_rides(window_sec: int = 1200, limit: int = 20) -> list:
+    """
+    Return recent rides with persisted best-effort power for a given duration.
+    Default is 20-minute best power.
+    """
+    if not dataset_exists("activity_best_efforts"):
+        return [{"message": "activity_best_efforts table does not exist yet."}]
+
+    if not dataset_exists("strava_activities"):
+        return [{"message": "strava_activities table does not exist yet."}]
+
+    limit = clamp_limit(limit, 1, 100)
+
+    sql_text = """
+    select
+        s.strava_activity_id,
+        s.activity_date,
+        s.name,
+        s.sport_type,
+        s.distance_m,
+        s.moving_time_s,
+        s.elapsed_time_s,
+        s.average_watts,
+        s.weighted_average_watts,
+        s.max_watts,
+        s.kilojoules,
+        abe.window_sec,
+        abe.best_avg_power_w,
+        abe.source,
+        abe.computed_at
+    from activity_best_efforts abe
+    join strava_activities s
+      on s.strava_activity_id = abe.activity_id
+    where s.sport_type = 'Ride'
+      and abe.window_sec = %s
+    order by s.activity_date desc
+    limit %s
+    """
+    return run_query(sql_text, (window_sec, limit))
+
+
+@mcp.tool()
+def get_activity_stream_availability(activity_id: int) -> dict:
+    """
+    Return whether stream-level power data exists for an activity.
+    """
+    if not dataset_exists("activity_streams"):
+        return {"message": "activity_streams table does not exist yet."}
+
+    sql_text = """
+    select exists (
+        select 1
+        from activity_streams
+        where activity_id = %s
+          and power_w is not null
+    ) as has_power_streams
+    """
+    return run_query_one(sql_text, (activity_id,))
 
 
 @mcp.tool()

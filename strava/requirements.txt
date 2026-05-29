@@ -1,3 +1,4 @@
 requests
 psycopg2-binary
 python-dotenv
+garmin-fit-sdk

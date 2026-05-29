@@ -1,9 +1,17 @@
 import os
 import sys
 import json
+import datetime
 import psycopg2
 import requests
 from dotenv import load_dotenv
+
+from services.strava_streams import normalize_strava_streams
+from services.power_sync import (
+    ensure_power_tables,
+    upsert_activity_stream_rows,
+    upsert_best_efforts,
+)
 
 load_dotenv()
 
@@ -69,7 +77,7 @@ def fetch_activity_streams(access_token, activity_id, keys=None):
     headers = {"Authorization": f"Bearer {access_token}"}
     params = {
         "keys": ",".join(keys),
-        "key_by_type": "true"
+        "key_by_type": "true",
     }
 
     resp = requests.get(url, headers=headers, params=params, timeout=30)
@@ -155,8 +163,8 @@ def upsert_activities(conn, activities):
                         a.get("commute"),
                         a.get("manual"),
                         a.get("private"),
-                        json.dumps(a)
-                    )
+                        json.dumps(a),
+                    ),
                 )
 
 
@@ -179,17 +187,20 @@ def upsert_activity_streams(conn, activity_id, streams):
 
     with conn:
         with conn.cursor() as cur:
-            # safest approach: replace existing rows for the activity
+            # simplest approach: replace existing rows for the activity
             cur.execute(
                 "delete from strava_activity_streams where strava_activity_id = %s",
-                (activity_id,)
+                (activity_id,),
             )
 
             inserted_count = 0
 
             for stream_type, stream_obj in streams.items():
                 if not isinstance(stream_obj, dict):
-                    print(f"⚠️ Unexpected stream object for {activity_id} / {stream_type}: {type(stream_obj)}")
+                    print(
+                        f"⚠️ Unexpected stream object for {activity_id} / {stream_type}: "
+                        f"{type(stream_obj)}"
+                    )
                     continue
 
                 data = stream_obj.get("data", [])
@@ -197,7 +208,7 @@ def upsert_activity_streams(conn, activity_id, streams):
                     print(f"⚠️ Stream {stream_type} for {activity_id} has non-list data")
                     continue
 
-                print(f"  → stream_type={stream_type}, points={len(data)}")
+                print(f"  -> stream_type={stream_type}, points={len(data)}")
 
                 for idx, value in enumerate(data):
                     value_numeric = None
@@ -236,12 +247,28 @@ def upsert_activity_streams(conn, activity_id, streams):
                             idx,
                             value_numeric,
                             value_text,
-                            value_json
-                        )
+                            value_json,
+                        ),
                     )
                     inserted_count += 1
 
-            print(f"  → inserted/updated {inserted_count} stream rows for activity {activity_id}")
+            print(f"  -> inserted/updated {inserted_count} stream rows for activity {activity_id}")
+
+
+def parse_start_time(start_date_value):
+    if not start_date_value:
+        return None
+
+    if isinstance(start_date_value, datetime.datetime):
+        return start_date_value
+
+    if isinstance(start_date_value, str):
+        try:
+            return datetime.datetime.fromisoformat(start_date_value.replace("Z", "+00:00"))
+        except Exception:
+            return None
+
+    return None
 
 
 def main():
@@ -252,11 +279,13 @@ def main():
         print("Refreshing Strava token...")
         new_tokens = refresh_access_token(tokens["refresh_token"])
 
-        save_tokens({
-            "access_token": new_tokens["access_token"],
-            "refresh_token": new_tokens["refresh_token"],
-            "expires_at": new_tokens["expires_at"]
-        })
+        save_tokens(
+            {
+                "access_token": new_tokens["access_token"],
+                "refresh_token": new_tokens["refresh_token"],
+                "expires_at": new_tokens["expires_at"],
+            }
+        )
 
         print("✅ Token refreshed and saved")
         access_token = new_tokens["access_token"]
@@ -276,10 +305,13 @@ def main():
             port=DB_PORT,
             dbname=DB_NAME,
             user=DB_USER,
-            password=DB_PASSWORD
+            password=DB_PASSWORD,
         )
 
-        # 1) Upsert normal activity summaries
+        # Ensure normalized power tables exist
+        ensure_power_tables(conn)
+
+        # 1) Upsert activity summaries
         upsert_activities(conn, activities)
 
         # 2) Fetch streams for ride-like activities only
@@ -299,7 +331,7 @@ def main():
                 streams = fetch_activity_streams(
                     access_token,
                     activity_id,
-                    keys=["time", "distance", "watts"]
+                    keys=["time", "distance", "watts"],
                 )
 
                 print(f"Raw streams response for activity {activity_id}:")
@@ -308,14 +340,47 @@ def main():
                 except Exception as dump_err:
                     print(f"Could not dump streams for {activity_id}: {dump_err}")
 
+                # Existing raw Strava stream table
                 upsert_activity_streams(conn, activity_id, streams)
+
+                # New normalized stream + best-effort pipeline
+                start_time = parse_start_time(a.get("start_date"))
+                normalized_rows = normalize_strava_streams(
+                    streams,
+                    activity_start_time=start_time,
+                )
+
+                if normalized_rows:
+                    row_count = upsert_activity_stream_rows(
+                        conn=conn,
+                        activity_id=activity_id,
+                        rows=normalized_rows,
+                        source="strava",
+                    )
+
+                    power_values = [row.get("power_w") for row in normalized_rows]
+
+                    best_efforts = upsert_best_efforts(
+                        conn=conn,
+                        activity_id=activity_id,
+                        power_values=power_values,
+                        source="strava",
+                        windows=[5, 60, 300, 1200],
+                    )
+
+                    print(
+                        f"✅ Power sync complete for activity {activity_id} "
+                        f"(rows={row_count}, best_efforts={best_efforts})"
+                    )
+                else:
+                    print(f"⚠️ No normalized rows generated for activity {activity_id}")
+
                 print(f"✅ Streams synced for activity {activity_id}")
 
             except Exception as e:
                 print(f"⚠️ Stream sync failed for activity {activity_id}: {e}")
 
         conn.close()
-
         print("Strava sync complete.")
 
     except Exception as e:
