@@ -1,0 +1,28 @@
+# Environment variables / secrets
+.env
+*.env
+
+# Tokens / auth / credentials
+tokens/
+*.token
+*.json
+credentials.json
+auth.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+
+# Logs
+logs/
+*.log
+
+# VSCode (optional)
+.vscode/
+
+# OS junk
+.DS_Store
+Thumbs.db

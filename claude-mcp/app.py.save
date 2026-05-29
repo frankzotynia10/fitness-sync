@@ -1,0 +1,73 @@
+
+auth = AuthKitProvider( authkit_domain=os.environ["WORKOS_AUTHKIT_DOMAIN"], base_url=os.environ["BASE_URL"]
+    ORDER BY exercise_index, set_index
+    """
+    return run_query(sql_text, (routine_title,))
+
+
+# -------------------------------------------------------------------
+# Future-ready Hevy completed workout tools
+# These only work if you later create/sync the corresponding tables/views.
+# -------------------------------------------------------------------
+
+@mcp.tool()
+def get_recent_hevy_workouts(limit: int = 20) -> list:
+    """
+    Return recent completed Hevy workouts if the table exists.
+    """
+    if not dataset_exists("hevy_workouts"):
+        return [{
+            "message": "hevy_workouts table does not exist yet. Only routines are currently synced."
+        }]
+
+    if limit < 1:
+        limit = 1
+    if limit > 100:
+        limit = 100
+
+    sql_text = """
+    SELECT *
+    FROM hevy_workouts
+    ORDER BY start_time DESC
+    LIMIT %s
+    """
+    return run_query(sql_text, (limit,))
+
+@mcp.tool()
+def get_hevy_workout_detail(workout_id: str) -> list:
+    """
+    Return one completed Hevy workout if workout detail tables/views exist.
+    """
+    if dataset_exists("hevy_workout_context"):
+        sql_text = """
+        SELECT *
+        FROM hevy_workout_context
+        WHERE workout_id = %s
+        ORDER BY exercise_index, set_index
+        """
+        return run_query(sql_text, (workout_id,))
+
+    if dataset_exists("hevy_workout_sets"):
+        sql_text = """
+        SELECT *
+        FROM hevy_workout_sets
+        WHERE workout_id = %s
+        ORDER BY exercise_index, set_index
+        """
+        return run_query(sql_text, (workout_id,))
+
+    return [{
+        "message": "No completed Hevy workout detail tables/views exist yet."
+    }]
+
+
+# -------------------------------------------------------------------
+# Startup
+# -------------------------------------------------------------------
+
+if __name__ == "__main__":
+    mcp.run(
+        transport="http",
+        host="0.0.0.0",
+        port=8000
+    )

@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY login_once.py .
+COPY garmin_sync.py .
+
+ENV GARMINTOKENS=/root/.garminconnect
+
+CMD ["python", "garmin_sync.py"]
