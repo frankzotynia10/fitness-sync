@@ -1,7 +1,10 @@
 import os
 import re
+import json
 import psycopg2
 import psycopg2.extras
+import requests
+from collections import defaultdict
 from psycopg2 import sql
 from dotenv import load_dotenv
 from fastmcp import FastMCP
@@ -31,6 +34,17 @@ DB_PORT = os.environ.get("DB_PORT", "5432")
 DB_NAME = os.environ.get("DB_NAME", "postgres")
 DB_USER = os.environ["DB_USER"]
 DB_PASSWORD = os.environ["DB_PASSWORD"]
+
+# write-enabled connection (for proposal workflow only)
+DB_WRITE_HOST = os.environ.get("DB_WRITE_HOST", DB_HOST)
+DB_WRITE_PORT = os.environ.get("DB_WRITE_PORT", DB_PORT)
+DB_WRITE_NAME = os.environ.get("DB_WRITE_NAME", DB_NAME)
+DB_WRITE_USER = os.environ.get("DB_WRITE_USER")
+DB_WRITE_PASSWORD = os.environ.get("DB_WRITE_PASSWORD")
+
+# Hevy API config (for push-back into the Hevy app)
+HEVY_API_KEY = os.environ.get("HEVY_API_KEY")
+HEVY_API_BASE = os.environ.get("HEVY_API_BASE", "https://api.hevyapp.com").rstrip("/")
 
 # -------------------------------------------------------------------
 # Safety / SQL guards
@@ -86,6 +100,21 @@ def get_conn():
     return conn
 
 
+def get_write_conn():
+    if not DB_WRITE_USER or not DB_WRITE_PASSWORD:
+        raise RuntimeError("DB_WRITE_USER / DB_WRITE_PASSWORD are not configured.")
+
+    conn = psycopg2.connect(
+        host=DB_WRITE_HOST,
+        port=DB_WRITE_PORT,
+        dbname=DB_WRITE_NAME,
+        user=DB_WRITE_USER,
+        password=DB_WRITE_PASSWORD,
+    )
+    conn.autocommit = False
+    return conn
+
+
 def run_query(sql_text: str, params: tuple = ()):
     conn = get_conn()
     try:
@@ -120,6 +149,34 @@ def run_scalar(sql_text: str, params: tuple = ()):
             cur.execute(sql_text, params)
             row = cur.fetchone()
             return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def run_write(sql_text: str, params: tuple = ()):
+    conn = get_write_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql_text, params)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def run_write_returning_one(sql_text: str, params: tuple = ()):
+    conn = get_write_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql_text, params)
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row) if row else {}
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -193,6 +250,188 @@ def get_dataset_columns(dataset_name: str, schema_name: str = "public") -> set:
     """
     rows = run_query(sql_text, (schema_name, dataset_name))
     return {row["column_name"] for row in rows}
+
+
+# -------------------------------------------------------------------
+# Hevy API helpers (push approved changes back into the Hevy app)
+# -------------------------------------------------------------------
+
+def hevy_headers():
+    if not HEVY_API_KEY:
+        raise RuntimeError("HEVY_API_KEY is not configured.")
+    return {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "api-key": HEVY_API_KEY,
+    }
+
+
+def build_hevy_routine_payload_from_db(routine_title: str) -> dict:
+    """
+    Build a Hevy-compatible routine update payload from local DB tables.
+
+    Assumes:
+      - hevy_routines
+      - hevy_routine_exercises
+      - hevy_routine_sets
+
+    Returns:
+      {
+        "routine_id": "<hevy routine id>",
+        "payload": { "routine": { ... } }
+      }
+
+    NOTE:
+    Hevy's API may require a slightly different surface shape depending on their current schema.
+    This wrapper uses the common top-level "routine" envelope.
+    """
+    if not dataset_exists("hevy_routines") or not dataset_exists("hevy_routine_exercises") or not dataset_exists("hevy_routine_sets"):
+        raise RuntimeError("hevy routine tables do not all exist.")
+
+    routine_rows = run_query(
+        """
+        select routine_id, title, folder_id, raw_json
+        from hevy_routines
+        where title = %s
+        limit 1
+        """,
+        (routine_title,)
+    )
+    if not routine_rows:
+        raise RuntimeError(f"Routine '{routine_title}' not found in hevy_routines.")
+
+    routine = routine_rows[0]
+    routine_id = routine["routine_id"]
+
+    routine_raw = routine.get("raw_json") or {}
+    if isinstance(routine_raw, str):
+        try:
+            routine_raw = json.loads(routine_raw)
+        except Exception:
+            routine_raw = {}
+
+    rows = run_query(
+        """
+        select
+          e.exercise_index,
+          e.title as exercise_name,
+          e.notes as exercise_notes,
+          e.exercise_template_id,
+          e.superset_id,
+          e.rest_seconds,
+          s.set_index,
+          s.set_type,
+          s.weight_kg,
+          s.reps,
+          s.distance_meters,
+          s.duration_seconds,
+          s.custom_metric
+        from hevy_routine_exercises e
+        join hevy_routine_sets s
+          on e.routine_id = s.routine_id
+         and e.exercise_index = s.exercise_index
+        where e.routine_id = %s
+        order by e.exercise_index, s.set_index
+        """,
+        (routine_id,)
+    )
+
+    grouped_sets = defaultdict(list)
+    exercise_meta = {}
+
+    for row in rows:
+        ex_idx = row["exercise_index"]
+
+        exercise_meta[ex_idx] = {
+            "title": row["exercise_name"],
+            "notes": row["exercise_notes"],
+            "exercise_template_id": row["exercise_template_id"],
+            "superset_id": row["superset_id"],
+            "rest_seconds": row["rest_seconds"],
+        }
+
+        set_obj = {
+            "type": row["set_type"],
+        }
+        if row["weight_kg"] is not None:
+            set_obj["weight_kg"] = float(row["weight_kg"])
+        if row["reps"] is not None:
+            set_obj["reps"] = int(row["reps"])
+        if row["distance_meters"] is not None:
+            set_obj["distance_meters"] = float(row["distance_meters"])
+        if row["duration_seconds"] is not None:
+            set_obj["duration_seconds"] = int(row["duration_seconds"])
+        if row["custom_metric"] is not None:
+            set_obj["custom_metric"] = float(row["custom_metric"])
+
+        grouped_sets[ex_idx].append(set_obj)
+
+    exercises = []
+    for ex_idx in sorted(grouped_sets.keys()):
+        meta = exercise_meta[ex_idx]
+        exercise_obj = {
+            "sets": grouped_sets[ex_idx]
+        }
+
+        if meta.get("exercise_template_id"):
+            exercise_obj["exercise_template_id"] = meta["exercise_template_id"]
+
+        # keep title for readability / local consistency
+        if meta.get("title"):
+            exercise_obj["title"] = meta["title"]
+
+        if meta.get("notes"):
+            exercise_obj["notes"] = meta["notes"]
+        if meta.get("superset_id"):
+            exercise_obj["superset_id"] = meta["superset_id"]
+        if meta.get("rest_seconds") is not None:
+            exercise_obj["rest_seconds"] = int(meta["rest_seconds"])
+
+        exercises.append(exercise_obj)
+
+    routine_body = {
+        "title": routine["title"],
+        "folder_id": routine.get("folder_id"),
+        "notes": routine_raw.get("notes"),
+        "exercises": exercises,
+    }
+
+    return {
+        "routine_id": routine_id,
+        "payload": {
+            "routine": routine_body
+        }
+    }
+
+
+def push_routine_to_hevy_internal(routine_title: str) -> dict:
+    """
+    Push the current DB-backed routine definition to Hevy.
+
+    This uses:
+      PUT /v1/routines/{routineId}
+    """
+    built = build_hevy_routine_payload_from_db(routine_title)
+    routine_id = built["routine_id"]
+    payload = built["payload"]
+
+    url = f"{HEVY_API_BASE}/v1/routines/{routine_id}"
+    resp = requests.put(url, headers=hevy_headers(), json=payload, timeout=30)
+
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Hevy routine update failed ({resp.status_code}): {resp.text}")
+
+    try:
+        response_json = resp.json()
+    except Exception:
+        response_json = {"raw_text": resp.text}
+
+    return {
+        "routine_id": routine_id,
+        "routine_title": routine_title,
+        "hevy_response": response_json,
+        "payload_sent": payload,
+    }
 
 
 # -------------------------------------------------------------------
@@ -875,153 +1114,17 @@ def get_recent_power_curve(limit: int = 10) -> list:
 def get_activity_best_efforts(strava_activity_id: int) -> dict:
     """
     Return best-effort summary for a specific ride.
-    Prefers the persisted activity_best_efforts table if present,
-    otherwise falls back to strava_activity_best_efforts view.
     """
-    if dataset_exists("activity_best_efforts"):
-        sql_text = """
-        select
-            source,
-            activity_id,
-            window_sec,
-            best_avg_power_w,
-            computed_at
-        from activity_best_efforts
-        where activity_id = %s
-        order by window_sec
-        """
-        rows = run_query(sql_text, (strava_activity_id,))
-        if rows:
-            return {
-                "strava_activity_id": strava_activity_id,
-                "best_efforts": rows
-            }
-
-    if relation_exists("strava_activity_best_efforts"):
-        sql_text = """
-        select *
-        from strava_activity_best_efforts
-        where strava_activity_id = %s
-        limit 1
-        """
-        return run_query_one(sql_text, (strava_activity_id,))
-
-    return {
-        "message": "Neither activity_best_efforts table nor strava_activity_best_efforts view exists yet."
-    }
-
-
-@mcp.tool()
-def get_activity_best_efforts_persisted(activity_id: int) -> list:
-    """
-    Return persisted best-effort power rows for one activity from activity_best_efforts.
-    """
-    if not dataset_exists("activity_best_efforts"):
-        return [{"message": "activity_best_efforts table does not exist yet."}]
+    if not relation_exists("strava_activity_best_efforts"):
+        return {"message": "strava_activity_best_efforts view does not exist yet."}
 
     sql_text = """
-    select
-        source,
-        activity_id,
-        window_sec,
-        best_avg_power_w,
-        computed_at
-    from activity_best_efforts
-    where activity_id = %s
-    order by window_sec
+    select *
+    from strava_activity_best_efforts
+    where strava_activity_id = %s
+    limit 1
     """
-    return run_query(sql_text, (activity_id,))
-
-
-@mcp.tool()
-def get_peak_power_history(window_sec: int = 1200, limit: int = 20) -> list:
-    """
-    Return recent peak power history for a specific duration window.
-    Common windows:
-      5 = 5s
-      60 = 1m
-      300 = 5m
-      1200 = 20m
-    """
-    if not dataset_exists("activity_best_efforts"):
-        return [{"message": "activity_best_efforts table does not exist yet."}]
-
-    limit = clamp_limit(limit, 1, 100)
-
-    sql_text = """
-    select
-        source,
-        activity_id,
-        window_sec,
-        best_avg_power_w,
-        computed_at
-    from activity_best_efforts
-    where window_sec = %s
-    order by computed_at desc
-    limit %s
-    """
-    return run_query(sql_text, (window_sec, limit))
-
-
-@mcp.tool()
-def get_recent_best_power_for_rides(window_sec: int = 1200, limit: int = 20) -> list:
-    """
-    Return recent rides with persisted best-effort power for a given duration.
-    Default is 20-minute best power.
-    """
-    if not dataset_exists("activity_best_efforts"):
-        return [{"message": "activity_best_efforts table does not exist yet."}]
-
-    if not dataset_exists("strava_activities"):
-        return [{"message": "strava_activities table does not exist yet."}]
-
-    limit = clamp_limit(limit, 1, 100)
-
-    sql_text = """
-    select
-        s.strava_activity_id,
-        s.activity_date,
-        s.name,
-        s.sport_type,
-        s.distance_m,
-        s.moving_time_s,
-        s.elapsed_time_s,
-        s.average_watts,
-        s.weighted_average_watts,
-        s.max_watts,
-        s.kilojoules,
-        abe.window_sec,
-        abe.best_avg_power_w,
-        abe.source,
-        abe.computed_at
-    from activity_best_efforts abe
-    join strava_activities s
-      on s.strava_activity_id = abe.activity_id
-    where s.sport_type = 'Ride'
-      and abe.window_sec = %s
-    order by s.activity_date desc
-    limit %s
-    """
-    return run_query(sql_text, (window_sec, limit))
-
-
-@mcp.tool()
-def get_activity_stream_availability(activity_id: int) -> dict:
-    """
-    Return whether stream-level power data exists for an activity.
-    """
-    if not dataset_exists("activity_streams"):
-        return {"message": "activity_streams table does not exist yet."}
-
-    sql_text = """
-    select exists (
-        select 1
-        from activity_streams
-        where activity_id = %s
-          and power_w is not null
-    ) as has_power_streams
-    """
-    return run_query_one(sql_text, (activity_id,))
+    return run_query_one(sql_text, (strava_activity_id,))
 
 
 @mcp.tool()
@@ -1130,6 +1233,451 @@ def get_underfueling_signals(days: int = 14) -> list:
     limit %s
     """
     return run_query(sql_text, (days,))
+
+
+# -------------------------------------------------------------------
+# Program change proposal tools (approval-gated write workflow)
+# -------------------------------------------------------------------
+
+@mcp.tool()
+def create_program_change_proposal(
+    routine_title: str,
+    exercise_name: str,
+    set_index: int,
+    recommendation_type: str,
+    proposed_weight_kg: float = None,
+    proposed_reps: int = None,
+    proposed_set_type: str = "",
+    rationale: str = "",
+    current_weight_kg: float = None,
+    current_reps: int = None,
+    current_set_type: str = "",
+    supporting_context_json: str = "{}"
+) -> dict:
+    """
+    Create a pending program change proposal.
+    This does NOT modify the routine yet.
+    """
+    if not dataset_exists("hevy_program_change_proposals"):
+        return {"message": "hevy_program_change_proposals table does not exist yet."}
+
+    try:
+        supporting_context = psycopg2.extras.Json(json.loads(supporting_context_json or "{}"))
+    except Exception as e:
+        return {"message": f"Invalid supporting_context_json: {e}"}
+
+    sql_text = """
+    insert into hevy_program_change_proposals (
+        created_by,
+        status,
+        routine_title,
+        exercise_name,
+        set_index,
+        current_weight_kg,
+        current_reps,
+        current_set_type,
+        proposed_weight_kg,
+        proposed_reps,
+        proposed_set_type,
+        recommendation_type,
+        rationale,
+        supporting_context
+    )
+    values (
+        'claude',
+        'pending',
+        %s, %s, %s,
+        %s, %s, %s,
+        %s, %s, %s,
+        %s, %s, %s
+    )
+    returning *
+    """
+    return run_write_returning_one(
+        sql_text,
+        (
+            routine_title,
+            exercise_name,
+            set_index,
+            current_weight_kg,
+            current_reps,
+            current_set_type or None,
+            proposed_weight_kg,
+            proposed_reps,
+            proposed_set_type or None,
+            recommendation_type,
+            rationale or None,
+            supporting_context,
+        )
+    )
+
+
+@mcp.tool()
+def get_pending_program_change_proposals(limit: int = 50) -> list:
+    """
+    Return pending program change proposals.
+    """
+    if not dataset_exists("hevy_program_change_proposals"):
+        return [{"message": "hevy_program_change_proposals table does not exist yet."}]
+
+    limit = clamp_limit(limit, 1, 200)
+
+    sql_text = """
+    select *
+    from hevy_program_change_proposals
+    where status = 'pending'
+    order by created_at desc
+    limit %s
+    """
+    return run_query(sql_text, (limit,))
+
+
+@mcp.tool()
+def get_program_change_proposals(status: str = "", limit: int = 100) -> list:
+    """
+    Return program change proposals.
+    Optional status filter: pending / approved / rejected / applied
+    """
+    if not dataset_exists("hevy_program_change_proposals"):
+        return [{"message": "hevy_program_change_proposals table does not exist yet."}]
+
+    limit = clamp_limit(limit, 1, 500)
+
+    if status:
+        sql_text = """
+        select *
+        from hevy_program_change_proposals
+        where status = %s
+        order by created_at desc
+        limit %s
+        """
+        return run_query(sql_text, (status, limit))
+
+    sql_text = """
+    select *
+    from hevy_program_change_proposals
+    order by created_at desc
+    limit %s
+    """
+    return run_query(sql_text, (limit,))
+
+
+@mcp.tool()
+def update_program_change_status(
+    proposal_id: str,
+    new_status: str,
+    reviewed_by: str = "frank"
+) -> dict:
+    """
+    Update a proposal status to approved or rejected.
+    """
+    if not dataset_exists("hevy_program_change_proposals"):
+        return {"message": "hevy_program_change_proposals table does not exist yet."}
+
+    if new_status not in ("approved", "rejected"):
+        return {"message": "new_status must be 'approved' or 'rejected'."}
+
+    sql_text = """
+    update hevy_program_change_proposals
+    set
+        status = %s,
+        reviewed_by = %s,
+        reviewed_at = now()
+    where proposal_id = %s
+    returning *
+    """
+    return run_write_returning_one(sql_text, (new_status, reviewed_by, proposal_id))
+
+
+@mcp.tool()
+def apply_program_change_proposal(proposal_id: str) -> dict:
+    """
+    Apply one approved proposal to hevy_routine_sets and mark it as applied.
+    This updates the LOCAL DB-backed routine tables, not the Hevy app directly.
+    """
+    if not dataset_exists("hevy_program_change_proposals"):
+        return {"message": "hevy_program_change_proposals table does not exist yet."}
+
+    if not dataset_exists("hevy_routines") or not dataset_exists("hevy_routine_exercises") or not dataset_exists("hevy_routine_sets"):
+        return {"message": "hevy routine base tables do not all exist yet."}
+
+    conn = get_write_conn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                select *
+                from hevy_program_change_proposals
+                where proposal_id = %s
+                for update
+                """,
+                (proposal_id,)
+            )
+            proposal = cur.fetchone()
+
+            if not proposal:
+                conn.rollback()
+                return {"message": "Proposal not found."}
+
+            proposal = dict(proposal)
+
+            if proposal["status"] != "approved":
+                conn.rollback()
+                return {
+                    "message": f"Proposal status must be 'approved' before apply. Current status: {proposal['status']}"
+                }
+
+            cur.execute(
+                """
+                update hevy_routine_sets rs
+                set
+                    weight_kg = coalesce(%s, rs.weight_kg),
+                    reps = coalesce(%s, rs.reps),
+                    set_type = coalesce(nullif(%s, ''), rs.set_type)
+                from hevy_routine_exercises re
+                join hevy_routines r
+                  on re.routine_id = r.routine_id
+                where rs.routine_id = re.routine_id
+                  and rs.exercise_index = re.exercise_index
+                  and r.title = %s
+                  and re.title = %s
+                  and rs.set_index = %s
+                returning
+                  r.title as routine_title,
+                  re.title as exercise_name,
+                  rs.set_index,
+                  rs.weight_kg,
+                  rs.reps,
+                  rs.set_type
+                """,
+                (
+                    proposal["proposed_weight_kg"],
+                    proposal["proposed_reps"],
+                    proposal["proposed_set_type"] or "",
+                    proposal["routine_title"],
+                    proposal["exercise_name"],
+                    proposal["set_index"],
+                )
+            )
+
+            updated_rows = cur.fetchall()
+
+            if not updated_rows:
+                conn.rollback()
+                return {
+                    "message": "No matching routine set row found to update.",
+                    "proposal": proposal
+                }
+
+            cur.execute(
+                """
+                update hevy_program_change_proposals
+                set
+                    status = 'applied',
+                    applied_at = now()
+                where proposal_id = %s
+                returning proposal_id, status, applied_at
+                """,
+                (proposal_id,)
+            )
+            applied_meta = dict(cur.fetchone())
+
+        conn.commit()
+
+        return {
+            "message": "Proposal applied successfully.",
+            "applied_proposal": applied_meta,
+            "updated_rows": [dict(r) for r in updated_rows]
+        }
+
+    except Exception as e:
+        conn.rollback()
+        return {"message": f"Apply failed: {e}"}
+    finally:
+        conn.close()
+
+
+@mcp.tool()
+def push_routine_to_hevy(routine_title: str) -> dict:
+    """
+    Push the current DB-backed routine state to Hevy.
+    Useful if a previous Hevy push failed and you want to retry.
+    """
+    try:
+        result = push_routine_to_hevy_internal(routine_title)
+        return {
+            "message": "Routine pushed to Hevy successfully.",
+            **result
+        }
+    except Exception as e:
+        return {"message": f"Routine push failed: {e}"}
+
+
+@mcp.tool()
+def approve_and_apply_program_change_proposal(
+    proposal_id: str,
+    reviewed_by: str = "frank"
+) -> dict:
+    """
+    Approve one proposal, apply it to the local DB routine tables,
+    then push the updated routine to Hevy.
+    """
+    if not dataset_exists("hevy_program_change_proposals"):
+        return {"message": "hevy_program_change_proposals table does not exist yet."}
+
+    approved = update_program_change_status(proposal_id, "approved", reviewed_by=reviewed_by)
+    if approved.get("message") and "proposal_id" not in approved:
+        return approved
+
+    applied = apply_program_change_proposal(proposal_id)
+    if applied.get("message") != "Proposal applied successfully.":
+        return {
+            "message": "Proposal approved but local DB apply failed.",
+            "approval_result": approved,
+            "apply_result": applied
+        }
+
+    updated_rows = applied.get("updated_rows", [])
+    if not updated_rows:
+        return {
+            "message": "Proposal applied locally, but no updated rows were returned.",
+            "approval_result": approved,
+            "apply_result": applied
+        }
+
+    routine_title = updated_rows[0]["routine_title"]
+
+    try:
+        push_result = push_routine_to_hevy_internal(routine_title)
+
+        run_write(
+            """
+            update hevy_program_change_proposals
+            set
+                hevy_push_status = 'success',
+                hevy_pushed_at = now(),
+                hevy_push_error = null
+            where proposal_id = %s
+            """,
+            (proposal_id,)
+        )
+
+        return {
+            "message": "Proposal approved, applied locally, and pushed to Hevy successfully.",
+            "approval_result": approved,
+            "apply_result": applied,
+            "hevy_push_result": push_result
+        }
+
+    except Exception as e:
+        run_write(
+            """
+            update hevy_program_change_proposals
+            set
+                hevy_push_status = 'failed',
+                hevy_push_error = %s
+            where proposal_id = %s
+            """,
+            (str(e), proposal_id)
+        )
+
+        return {
+            "message": "Proposal approved and applied locally, but pushing to Hevy failed.",
+            "approval_result": approved,
+            "apply_result": applied,
+            "hevy_push_error": str(e),
+            "routine_title": routine_title
+        }
+
+
+@mcp.tool()
+def approve_and_apply_program_change_proposals(
+    proposal_ids_json: str,
+    reviewed_by: str = "frank"
+) -> dict:
+    """
+    Approve and apply multiple proposals, then push each affected routine to Hevy once.
+
+    proposal_ids_json example:
+      ["uuid-1", "uuid-2", "uuid-3"]
+    """
+    if not dataset_exists("hevy_program_change_proposals"):
+        return {"message": "hevy_program_change_proposals table does not exist yet."}
+
+    try:
+        proposal_ids = json.loads(proposal_ids_json or "[]")
+    except Exception as e:
+        return {"message": f"Invalid proposal_ids_json: {e}"}
+
+    if not isinstance(proposal_ids, list) or not proposal_ids:
+        return {"message": "proposal_ids_json must be a non-empty JSON array of proposal IDs."}
+
+    results = []
+    affected_routines = set()
+
+    for proposal_id in proposal_ids:
+        approved = update_program_change_status(proposal_id, "approved", reviewed_by=reviewed_by)
+        applied = apply_program_change_proposal(proposal_id)
+
+        item = {
+            "proposal_id": proposal_id,
+            "approval_result": approved,
+            "apply_result": applied
+        }
+
+        updated_rows = applied.get("updated_rows", [])
+        if updated_rows:
+            affected_routines.add(updated_rows[0]["routine_title"])
+
+        results.append(item)
+
+    push_results = []
+    for routine_title in sorted(affected_routines):
+        try:
+            push_result = push_routine_to_hevy_internal(routine_title)
+            push_results.append({
+                "routine_title": routine_title,
+                "status": "success",
+                "result": push_result
+            })
+
+            run_write(
+                """
+                update hevy_program_change_proposals
+                set
+                    hevy_push_status = 'success',
+                    hevy_pushed_at = now(),
+                    hevy_push_error = null
+                where proposal_id = any(%s)
+                  and routine_title = %s
+                """,
+                (proposal_ids, routine_title)
+            )
+
+        except Exception as e:
+            push_results.append({
+                "routine_title": routine_title,
+                "status": "failed",
+                "error": str(e)
+            })
+
+            run_write(
+                """
+                update hevy_program_change_proposals
+                set
+                    hevy_push_status = 'failed',
+                    hevy_push_error = %s
+                where proposal_id = any(%s)
+                  and routine_title = %s
+                """,
+                (str(e), proposal_ids, routine_title)
+            )
+
+    return {
+        "message": "Batch approve/apply completed.",
+        "proposal_results": results,
+        "hevy_push_results": push_results
+    }
 
 
 # -------------------------------------------------------------------
