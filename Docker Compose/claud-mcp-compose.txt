@@ -6,6 +6,7 @@ services:
     restart: unless-stopped
     ports:
       - "4443:8000"
+      - "8001:8001"
     env_file:
       - /mnt/user/appdata/fitness-sync/claude-mcp/.env
     environment:
