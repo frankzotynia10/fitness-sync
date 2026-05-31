@@ -221,6 +221,112 @@ def register(mcp):
             }
 
     @mcp.tool()
+    def bulk_apply_weight_corrections(
+        corrections_json: str,
+        reviewed_by: str = "frank"
+    ) -> dict:
+        """Apply a batch of lb-based weight corrections directly to hevy_routine_sets
+        and push each affected routine to Hevy once. Bypasses the proposal system
+        for mechanical unit-conversion fixes — no per-row tool calls needed.
+ 
+        corrections_json example:
+          [
+            {"routine": "Arms1", "exercise": "Bench Press (Barbell)", "set_index": 0, "target_lbs": 190},
+            {"routine": "Arms1", "exercise": "Bench Press (Barbell)", "set_index": 1, "target_lbs": 175},
+            {"routine": "Legs1", "exercise": "Squat (Barbell)", "set_index": 0, "target_lbs": 255}
+          ]
+        """
+        LBS_TO_KG = 0.45359237
+ 
+        try:
+            corrections = json.loads(corrections_json or "[]")
+        except Exception as e:
+            return {"message": f"Invalid corrections_json: {e}"}
+ 
+        if not isinstance(corrections, list) or not corrections:
+            return {"message": "corrections_json must be a non-empty JSON array."}
+ 
+        # Validate all entries up front
+        required_keys = {"routine", "exercise", "set_index", "target_lbs"}
+        for i, c in enumerate(corrections):
+            missing = required_keys - set(c.keys())
+            if missing:
+                return {"message": f"Correction at index {i} missing keys: {missing}"}
+ 
+        conn = get_write_conn()
+        updated = []
+        failed = []
+        affected_routines = set()
+ 
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                for c in corrections:
+                    weight_kg = round(c["target_lbs"] * LBS_TO_KG, 5)
+                    cur.execute("""
+                        update hevy_routine_sets rs
+                        set weight_kg = %s
+                        from hevy_routine_exercises re
+                        join hevy_routines r on re.routine_id = r.routine_id
+                        where rs.routine_id      = re.routine_id
+                          and rs.exercise_index  = re.exercise_index
+                          and r.title            = %s
+                          and re.title           = %s
+                          and rs.set_index       = %s
+                        returning
+                            r.title  as routine_title,
+                            re.title as exercise_name,
+                            rs.set_index,
+                            rs.weight_kg
+                    """, (weight_kg, c["routine"], c["exercise"], c["set_index"]))
+                    rows = cur.fetchall()
+                    if rows:
+                        affected_routines.add(c["routine"])
+                        updated.append({
+                            "routine":    c["routine"],
+                            "exercise":   c["exercise"],
+                            "set_index":  c["set_index"],
+                            "target_lbs": c["target_lbs"],
+                            "stored_kg":  weight_kg,
+                        })
+                    else:
+                        failed.append({
+                            "routine":   c["routine"],
+                            "exercise":  c["exercise"],
+                            "set_index": c["set_index"],
+                            "reason":    "No matching row found",
+                        })
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            return {"message": f"Batch update failed, rolled back: {e}"}
+        finally:
+            conn.close()
+ 
+        # Push each affected routine to Hevy once
+        push_results = []
+        for routine_title in sorted(affected_routines):
+            try:
+                push_result = push_routine_to_hevy_internal(routine_title)
+                push_results.append({
+                    "routine_title": routine_title,
+                    "status": "success",
+                    "result": push_result,
+                })
+            except Exception as e:
+                push_results.append({
+                    "routine_title": routine_title,
+                    "status": "failed",
+                    "error": str(e),
+                })
+ 
+        return {
+            "message": f"Bulk correction complete: {len(updated)} updated, {len(failed)} not found.",
+            "updated": updated,
+            "failed": failed,
+            "hevy_push_results": push_results,
+        }
+
+    @mcp.tool()
     def approve_and_apply_program_change_proposals(
         proposal_ids_json: str,
         reviewed_by: str = "frank"
