@@ -182,7 +182,7 @@ def register(mcp):
         if dataset_exists("strava_activities"):
             cols = get_dataset_columns("strava_activities")
             wanted = [
-                activity_date", "name", "sport_type",
+                "activity_date", "name", "sport_type",
                 "distance_m", "moving_time_s", "elapsed_time_s",
                 "average_watts", "max_watts", "kilojoules",
                 "average_heartrate", "max_heartrate",
