@@ -137,8 +137,8 @@ def register(mcp):
                     training_readiness,
                     hrv,
                     sleep_score,
-                    round(deep_sleep_seconds / 60.0) as deep_sleep_min,
-                    round(rem_sleep_seconds  / 60.0) as rem_sleep_min,
+                    round(deep_sleep_seconds::numeric / 60.0) as deep_sleep_min,
+                    round(rem_sleep_seconds::numeric  / 60.0) as rem_sleep_min,
                     body_battery,
                     training_load,
                     acute_training_load,
@@ -146,21 +146,21 @@ def register(mcp):
                     round(
                         case
                             when chronic_training_load > 0
-                            then acute_training_load / chronic_training_load
+                            then (acute_training_load / chronic_training_load)::numeric
                             else null
                         end, 2
                     ) as acwr,
                     training_status,
                     respiration_avg,
                     spo2_avg,
-                    round(nutrition_calories)   as calories,
-                    round(protein_g)            as protein_g,
-                    round(carbs_g)              as carbs_g,
-                    round(fat_g)                as fat_g,
-                    round(ride_kj)              as ride_kj,
+                    round(nutrition_calories::numeric)   as calories,
+                    round(protein_g::numeric)            as protein_g,
+                    round(carbs_g::numeric)              as carbs_g,
+                    round(fat_g::numeric)                as fat_g,
+                    round(ride_kj::numeric)              as ride_kj,
                     ride_count,
-                    round(strength_volume_load) as strength_volume_load,
-                    round(strength_avg_rpe, 1)  as strength_avg_rpe
+                    round(strength_volume_load::numeric) as strength_volume_load,
+                    round(strength_avg_rpe::numeric, 1)  as strength_avg_rpe
                 from daily_training_nutrition_context
                 order by date desc
                 limit %s
