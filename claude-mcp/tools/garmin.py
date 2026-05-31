@@ -112,3 +112,116 @@ def register(mcp):
             return [{"message": "daily_underfueling_signals view does not exist yet."}]
         return run_query("select * from daily_underfueling_signals order by date desc limit %s",
                          (clamp_limit(days, 1, 180),))
+
+    @mcp.tool()
+    def get_weekly_coaching_context(weeks: int = 2) -> dict:
+        """Return a single combined coaching context for weekly planning.
+        Joins recovery signals, training load, ride volume, strength volume,
+        and nutrition into one response. Replaces calling 5-6 separate tools
+        for 'what should I do next week' conversations.
+
+        Returns:
+          - daily: last N weeks of day-by-day recovery + training + nutrition
+          - weekly_strength: per-week lifting volume, set count, avg RPE
+          - recent_rides: last 10 rides with power and duration summary
+          - acwr_summary: current acute vs chronic load and ACWR ratio
+        """
+        days = clamp_limit(weeks, 1, 12) * 7
+        result = {}
+
+        # 1. Daily context — recovery + training load + nutrition + ride data
+        if dataset_exists("daily_training_nutrition_context"):
+            result["daily"] = run_query("""
+                select
+                    date,
+                    training_readiness,
+                    hrv,
+                    sleep_score,
+                    round(deep_sleep_seconds / 60.0) as deep_sleep_min,
+                    round(rem_sleep_seconds  / 60.0) as rem_sleep_min,
+                    body_battery,
+                    training_load,
+                    acute_training_load,
+                    chronic_training_load,
+                    round(
+                        case
+                            when chronic_training_load > 0
+                            then acute_training_load / chronic_training_load
+                            else null
+                        end, 2
+                    ) as acwr,
+                    training_status,
+                    respiration_avg,
+                    spo2_avg,
+                    round(nutrition_calories)   as calories,
+                    round(protein_g)            as protein_g,
+                    round(carbs_g)              as carbs_g,
+                    round(fat_g)                as fat_g,
+                    round(ride_kj)              as ride_kj,
+                    ride_count,
+                    round(strength_volume_load) as strength_volume_load,
+                    round(strength_avg_rpe, 1)  as strength_avg_rpe
+                from daily_training_nutrition_context
+                order by date desc
+                limit %s
+            """, (days,))
+        else:
+            result["daily"] = []
+
+        # 2. Weekly strength volume
+        if dataset_exists("hevy_weekly_volume"):
+            result["weekly_strength"] = run_query("""
+                select * from hevy_weekly_volume
+                order by week_start desc
+                limit %s
+            """, (clamp_limit(weeks, 1, 12),))
+        else:
+            result["weekly_strength"] = []
+
+        # 3. Recent rides — distance, duration, avg power, kJ
+        if dataset_exists("strava_activities"):
+            cols = get_dataset_columns("strava_activities")
+            wanted = [
+                "start_date", "name", "sport_type",
+                "distance", "moving_time", "elapsed_time",
+                "average_watts", "max_watts", "kilojoules",
+                "average_heartrate", "max_heartrate",
+                "total_elevation_gain", "suffer_score",
+            ]
+            available = [c for c in wanted if c in cols]
+            select_sql = sql.SQL(", ").join(sql.Identifier(c) for c in available)
+            query = sql.SQL("""
+                select {cols}
+                from public.strava_activities
+                where sport_type in ('Ride', 'VirtualRide', 'MountainBikeRide')
+                order by start_date desc
+                limit 10
+            """).format(cols=select_sql)
+            result["recent_rides"] = run_query_composed(query)
+        else:
+            result["recent_rides"] = []
+
+        # 4. ACWR summary — latest values only for quick reference
+        if dataset_exists("garmin_daily"):
+            cols = get_dataset_columns("garmin_daily")
+            acwr_cols = [c for c in [
+                "date", "acute_training_load", "chronic_training_load",
+                "acwr_ratio", "training_status", "training_readiness",
+                "body_battery", "hrv", "recovery_time_hours",
+            ] if c in cols]
+            if len(acwr_cols) > 1:
+                select_sql = sql.SQL(", ").join(sql.Identifier(c) for c in acwr_cols)
+                query = sql.SQL("""
+                    select {cols}
+                    from public.garmin_daily
+                    order by date desc
+                    limit 1
+                """).format(cols=select_sql)
+                rows = run_query_composed(query)
+                result["acwr_summary"] = rows[0] if rows else {}
+            else:
+                result["acwr_summary"] = {}
+        else:
+            result["acwr_summary"] = {}
+
+        return result
