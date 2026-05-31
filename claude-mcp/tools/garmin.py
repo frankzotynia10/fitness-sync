@@ -146,7 +146,7 @@ def register(mcp):
                     round(
                         case
                             when chronic_training_load > 0
-                            then (acute_training_load / chronic_training_load)::numeric
+                            then (acute_training_load / chronic_training_load)
                             else null
                         end, 2
                     ) as acwr,
@@ -182,11 +182,11 @@ def register(mcp):
         if dataset_exists("strava_activities"):
             cols = get_dataset_columns("strava_activities")
             wanted = [
-                "start_date", "name", "sport_type",
-                "distance", "moving_time", "elapsed_time",
+                activity_date", "name", "sport_type",
+                "distance_m", "moving_time_s", "elapsed_time_s",
                 "average_watts", "max_watts", "kilojoules",
                 "average_heartrate", "max_heartrate",
-                "total_elevation_gain", "suffer_score",
+                "total_elevation_gain_m",
             ]
             available = [c for c in wanted if c in cols]
             select_sql = sql.SQL(", ").join(sql.Identifier(c) for c in available)
@@ -194,7 +194,7 @@ def register(mcp):
                 select {cols}
                 from public.strava_activities
                 where sport_type in ('Ride', 'VirtualRide', 'MountainBikeRide')
-                order by start_date desc
+                order by activity_date desc
                 limit 10
             """).format(cols=select_sql)
             result["recent_rides"] = run_query_composed(query)
