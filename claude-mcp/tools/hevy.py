@@ -17,6 +17,68 @@ def register(mcp):
         return run_query("select * from hevy_routine_context order by routine_title, exercise_index, set_index")
 
     @mcp.tool()
+    def get_routine_summary() -> dict:
+        """Return all Hevy routines in a single call with weights displayed in lbs.
+        Organized by routine → exercise → sets. Use this instead of calling
+        get_hevy_routine_detail four times."""
+        if not relation_exists("hevy_routine_context"):
+            return {"message": "hevy_routine_context view does not exist yet."}
+
+        KG_TO_LBS = 2.20462262
+
+        rows = run_query("""
+            select
+                routine_title,
+                exercise_index,
+                exercise_name,
+                exercise_notes,
+                rest_seconds,
+                set_index,
+                set_type,
+                weight_kg,
+                reps
+            from hevy_routine_context
+            order by routine_title, exercise_index, set_index
+        """)
+
+        # Build nested structure: {routine → [exercises → [sets]]}
+        routines = {}
+        for row in rows:
+            rt = row["routine_title"]
+            if rt not in routines:
+                routines[rt] = {}
+
+            ex_idx = row["exercise_index"]
+            if ex_idx not in routines[rt]:
+                routines[rt][ex_idx] = {
+                    "exercise_name":  row["exercise_name"],
+                    "exercise_notes": row["exercise_notes"],
+                    "rest_seconds":   row["rest_seconds"],
+                    "sets":           [],
+                }
+
+            weight_kg = row["weight_kg"]
+            weight_lbs = round(float(weight_kg) * KG_TO_LBS) if weight_kg is not None else None
+
+            routines[rt][ex_idx]["sets"].append({
+                "set_index":  row["set_index"],
+                "set_type":   row["set_type"],
+                "weight_lbs": weight_lbs,
+                "weight_kg":  float(weight_kg) if weight_kg is not None else None,
+                "reps":       row["reps"],
+            })
+
+        # Flatten exercise dicts to lists
+        result = {}
+        for routine_title, exercises in routines.items():
+            result[routine_title] = [
+                exercises[ex_idx]
+                for ex_idx in sorted(exercises.keys())
+            ]
+
+        return result
+
+    @mcp.tool()
     def get_hevy_routine_names() -> list:
         """Return available Hevy routine names."""
         if not dataset_exists("hevy_routines"):
