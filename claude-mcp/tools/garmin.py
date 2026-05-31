@@ -146,7 +146,7 @@ def register(mcp):
                     round(
                         case
                             when chronic_training_load > 0
-                            then (acute_training_load / chronic_training_load)
+                            then (acute_training_load / chronic_training_load)::numeric
                             else null
                         end, 2
                     ) as acwr,
