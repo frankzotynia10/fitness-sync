@@ -327,6 +327,197 @@ def register(mcp):
         }
 
     @mcp.tool()
+    def bulk_propose_and_apply(
+        changes_json: str,
+        reviewed_by: str = "frank"
+    ) -> dict:
+        """Create, approve, and apply multiple program change proposals in a single
+        tool call, then push each affected routine to Hevy once.
+
+        Use this for training decisions (weight progressions, rep changes) where
+        you want the proposal audit trail. For pure unit conversions, use
+        bulk_apply_weight_corrections instead.
+
+        changes_json example:
+          [
+            {
+              "routine": "Arms1",
+              "exercise": "Bench Press (Barbell)",
+              "set_index": 0,
+              "proposed_weight_kg": 88.45,
+              "proposed_reps": 5,
+              "rationale": "Top set progression +5lbs"
+            },
+            {
+              "routine": "Arms1",
+              "exercise": "Bench Press (Barbell)",
+              "set_index": 1,
+              "proposed_weight_kg": 81.65,
+              "proposed_reps": 8,
+              "rationale": "Backoff set progression +5lbs"
+            }
+          ]
+
+        All fields except routine, exercise, and set_index are optional —
+        omit proposed_weight_kg to leave weight unchanged, omit proposed_reps
+        to leave reps unchanged.
+        """
+        if not dataset_exists("hevy_program_change_proposals"):
+            return {"message": "hevy_program_change_proposals table does not exist yet."}
+
+        try:
+            changes = json.loads(changes_json or "[]")
+        except Exception as e:
+            return {"message": f"Invalid changes_json: {e}"}
+
+        if not isinstance(changes, list) or not changes:
+            return {"message": "changes_json must be a non-empty JSON array."}
+
+        # Validate required keys up front
+        required_keys = {"routine", "exercise", "set_index"}
+        for i, c in enumerate(changes):
+            missing = required_keys - set(c.keys())
+            if missing:
+                return {"message": f"Change at index {i} missing required keys: {missing}"}
+            if "proposed_weight_kg" not in c and "proposed_reps" not in c:
+                return {"message": f"Change at index {i} must have at least one of proposed_weight_kg or proposed_reps."}
+
+        conn = get_write_conn()
+        proposal_results = []
+        affected_routines = set()
+
+        try:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                for c in changes:
+                    # 1. Insert proposal and immediately mark approved
+                    cur.execute("""
+                        insert into hevy_program_change_proposals (
+                            created_by, status, routine_title, exercise_name, set_index,
+                            proposed_weight_kg, proposed_reps,
+                            recommendation_type, rationale,
+                            reviewed_by, reviewed_at
+                        ) values (
+                            'claude', 'approved', %s, %s, %s,
+                            %s, %s,
+                            'weight_adjustment', %s,
+                            %s, now()
+                        ) returning *
+                    """, (
+                        c["routine"],
+                        c["exercise"],
+                        c["set_index"],
+                        c.get("proposed_weight_kg"),
+                        c.get("proposed_reps"),
+                        c.get("rationale", ""),
+                        reviewed_by,
+                    ))
+                    proposal = dict(cur.fetchone())
+                    proposal_id = proposal["proposal_id"]
+
+                    # 2. Apply directly to hevy_routine_sets
+                    cur.execute("""
+                        update hevy_routine_sets rs
+                        set
+                            weight_kg = coalesce(%s, rs.weight_kg),
+                            reps      = coalesce(%s, rs.reps)
+                        from hevy_routine_exercises re
+                        join hevy_routines r on re.routine_id = r.routine_id
+                        where rs.routine_id      = re.routine_id
+                          and rs.exercise_index  = re.exercise_index
+                          and r.title            = %s
+                          and re.title           = %s
+                          and rs.set_index       = %s
+                        returning
+                            r.title  as routine_title,
+                            re.title as exercise_name,
+                            rs.set_index, rs.weight_kg, rs.reps
+                    """, (
+                        c.get("proposed_weight_kg"),
+                        c.get("proposed_reps"),
+                        c["routine"],
+                        c["exercise"],
+                        c["set_index"],
+                    ))
+                    updated_rows = cur.fetchall()
+
+                    if updated_rows:
+                        affected_routines.add(c["routine"])
+                        # Mark as applied
+                        cur.execute("""
+                            update hevy_program_change_proposals
+                            set status = 'applied', applied_at = now()
+                            where proposal_id = %s
+                        """, (proposal_id,))
+                        proposal_results.append({
+                            "proposal_id": str(proposal_id),
+                            "routine":     c["routine"],
+                            "exercise":    c["exercise"],
+                            "set_index":   c["set_index"],
+                            "status":      "applied",
+                            "updated":     [dict(r) for r in updated_rows],
+                        })
+                    else:
+                        # Roll back this proposal — no matching row
+                        cur.execute("""
+                            update hevy_program_change_proposals
+                            set status = 'rejected',
+                                rationale = concat(rationale, ' [AUTO-REJECTED: no matching routine set]')
+                            where proposal_id = %s
+                        """, (proposal_id,))
+                        proposal_results.append({
+                            "proposal_id": str(proposal_id),
+                            "routine":     c["routine"],
+                            "exercise":    c["exercise"],
+                            "set_index":   c["set_index"],
+                            "status":      "failed",
+                            "reason":      "No matching routine set found",
+                        })
+
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            return {"message": f"Batch proposal/apply failed, rolled back: {e}"}
+        finally:
+            conn.close()
+
+        # Push each affected routine to Hevy once
+        push_results = []
+        for routine_title in sorted(affected_routines):
+            try:
+                push_result = push_routine_to_hevy_internal(routine_title)
+                run_write("""
+                    update hevy_program_change_proposals
+                    set hevy_push_status = 'success', hevy_pushed_at = now(), hevy_push_error = null
+                    where routine_title = %s and status = 'applied' and hevy_push_status is null
+                """, (routine_title,))
+                push_results.append({
+                    "routine_title": routine_title,
+                    "status":        "success",
+                    "result":        push_result,
+                })
+            except Exception as e:
+                run_write("""
+                    update hevy_program_change_proposals
+                    set hevy_push_status = 'failed', hevy_push_error = %s
+                    where routine_title = %s and status = 'applied' and hevy_push_status is null
+                """, (str(e), routine_title))
+                push_results.append({
+                    "routine_title": routine_title,
+                    "status":        "failed",
+                    "error":         str(e),
+                })
+
+        applied = [r for r in proposal_results if r["status"] == "applied"]
+        failed  = [r for r in proposal_results if r["status"] == "failed"]
+
+        return {
+            "message":        f"Bulk proposal complete: {len(applied)} applied, {len(failed)} failed.",
+            "applied":        applied,
+            "failed":         failed,
+            "hevy_push_results": push_results,
+        }
+
+    @mcp.tool()
     def approve_and_apply_program_change_proposals(
         proposal_ids_json: str,
         reviewed_by: str = "frank"
