@@ -4,10 +4,18 @@ This service exposes the fitness database to Claude using **MCP (Model Context P
 
 It is the **intelligence layer** of the project:
 
-- connects to Postgres in **read-only** mode
+- connects to Postgres in **read-only** mode (write access via dedicated write user for proposal tools)
 - exposes curated tools to Claude
 - supports **OAuth / WorkOS AuthKit** for remote access
 - runs behind a reverse proxy for external Claude connector access
+
+---
+
+## Recent tool additions
+- `bulk_apply_weight_corrections` — batch lb-to-kg unit conversion, single DB transaction
+- `bulk_propose_and_apply` — batch training change proposals with audit trail, single tool call
+- `get_routine_summary` — all 4 routines in one call with lbs display
+- `get_weekly_coaching_context` — single-call weekly planning context (recovery + load + rides + strength + nutrition)
 
 ---
 
@@ -47,7 +55,8 @@ Claude custom connector
 ```
 
 Internally, the service:
-- uses a **read-only database user**
+- uses a **read-only database user** for all read tools
+- uses a **write database user** for proposal / routine update tools
 - exposes only the tools defined in `app.py`
 - can also include controlled schema exploration / read-only SQL tools
 
@@ -84,12 +93,19 @@ DB_NAME=postgres
 DB_USER=claude_reader
 DB_PASSWORD=your_read_only_password
 
+DB_WRITE_HOST=your_db_host
+DB_WRITE_PORT=5432
+DB_WRITE_NAME=postgres
+DB_WRITE_USER=claude_writer
+DB_WRITE_PASSWORD=your_write_password
+
 WORKOS_AUTHKIT_DOMAIN=your-workos-authkit-domain
 BASE_URL=https://your-public-mcp-domain
 ```
 
 ### Notes
 - `DB_USER` should be your **read-only DB user** (for example `claude_reader`)
+- `DB_WRITE_USER` should be your **write DB user** for proposal/routine tools
 - `BASE_URL` should be the externally reachable base URL for the MCP service
   - example: `https://ai.example.com`
 
@@ -97,7 +113,7 @@ BASE_URL=https://your-public-mcp-domain
 
 ## Read-only database model
 
-This service is designed to be **read-only**.
+This service is designed to be **read-only** for data access tools.
 
 ### Safety model
 - database session is opened with `readonly=True`
@@ -163,6 +179,7 @@ If any of these do not exist yet, the corresponding MCP tool should return a hel
 - `get_vo2max_history`
 - `get_training_load_history`
 - `get_recovery_signals`
+- `get_weekly_coaching_context` ← single-call weekly planning
 
 ### Strava tools
 - `get_recent_strava_activities`
@@ -174,11 +191,19 @@ If any of these do not exist yet, the corresponding MCP tool should return a hel
 ### Hevy tools
 - `get_hevy_routine_names`
 - `get_hevy_routine_detail`
+- `get_routine_summary` ← all routines in one call with lbs
 - `get_recent_hevy_workouts`
 - `get_hevy_workout_detail`
 - `get_weekly_strength_volume`
 - `get_strength_progression`
 - `get_muscle_group_fatigue`
+
+### Program change / write tools
+- `create_program_change_proposal`
+- `approve_and_apply_program_change_proposal`
+- `approve_and_apply_program_change_proposals`
+- `bulk_propose_and_apply` ← batch training changes, single call
+- `bulk_apply_weight_corrections` ← batch unit conversion, single call
 
 ### Nutrition / combined context
 - `get_nutrition_history`
@@ -291,11 +316,12 @@ Typical deployment for this project:
 
 Once connected, Claude can answer questions like:
 
-- “Am I recovered enough to push tomorrow?”
-- “Did I underfuel my harder rides recently?”
-- “How is my squat progressing?”
-- “Which muscle groups are accumulating the most fatigue?”
-- “Was my last ride actually steady aerobic work?”
+- "Am I recovered enough to push tomorrow?"
+- "Did I underfuel my harder rides recently?"
+- "How is my squat progressing?"
+- "Which muscle groups are accumulating the most fatigue?"
+- "Was my last ride actually steady aerobic work?"
+- "What should I do next week?" ← answered with get_weekly_coaching_context
 
 ---
 
