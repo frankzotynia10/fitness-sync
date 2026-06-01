@@ -117,12 +117,13 @@ def register(mcp):
     def get_weekly_coaching_context(weeks: int = 2) -> dict:
         """Return a single combined coaching context for weekly planning.
         Joins recovery signals, training load, ride volume, strength volume,
-        and nutrition into one response. Replaces calling 5-6 separate tools
-        for 'what should I do next week' conversations.
+        nutrition, and sleep into one response. Replaces calling 5-6 separate
+        tools for 'what should I do next week' conversations.
 
         Returns:
           - daily: last N weeks of day-by-day recovery + training + nutrition
           - weekly_strength: per-week lifting volume, set count, avg RPE
+          - weekly_sleep: per-week sleep averages (score, duration, deep, REM)
           - recent_rides: last 10 rides with power and duration summary
           - acwr_summary: current acute vs chronic load and ACWR ratio
         """
@@ -137,6 +138,7 @@ def register(mcp):
                     training_readiness,
                     hrv,
                     sleep_score,
+                    round(sleep_seconds::numeric / 3600.0, 1) as sleep_hours,
                     round(deep_sleep_seconds::numeric / 60.0) as deep_sleep_min,
                     round(rem_sleep_seconds::numeric  / 60.0) as rem_sleep_min,
                     body_battery,
@@ -178,7 +180,28 @@ def register(mcp):
         else:
             result["weekly_strength"] = []
 
-        # 3. Recent rides — distance, duration, avg power, kJ
+        # 3. Weekly sleep summary — averages per week
+        if dataset_exists("garmin_daily"):
+            result["weekly_sleep"] = run_query("""
+                select
+                    date_trunc('week', date)::date as week_start,
+                    count(*) as days_with_data,
+                    round(avg(sleep_score)::numeric, 1) as avg_sleep_score,
+                    round(avg(sleep_seconds / 3600.0)::numeric, 2) as avg_sleep_hours,
+                    round(avg(deep_sleep_seconds / 60.0)::numeric) as avg_deep_sleep_min,
+                    round(avg(rem_sleep_seconds / 60.0)::numeric) as avg_rem_sleep_min,
+                    round(avg(hrv)::numeric, 1) as avg_hrv,
+                    round(avg(resting_hr)::numeric, 1) as avg_resting_hr
+                from garmin_daily
+                where date >= current_date - (%s * interval '1 week')
+                  and sleep_score is not null
+                group by date_trunc('week', date)
+                order by week_start desc
+            """, (clamp_limit(weeks, 1, 12),))
+        else:
+            result["weekly_sleep"] = []
+
+        # 4. Recent rides — distance, duration, avg power, kJ
         if dataset_exists("strava_activities"):
             cols = get_dataset_columns("strava_activities")
             wanted = [
@@ -201,7 +224,7 @@ def register(mcp):
         else:
             result["recent_rides"] = []
 
-        # 4. ACWR summary — latest values only for quick reference
+        # 5. ACWR summary — latest values only for quick reference
         if dataset_exists("garmin_daily"):
             cols = get_dataset_columns("garmin_daily")
             acwr_cols = [c for c in [
