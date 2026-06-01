@@ -1,4 +1,5 @@
 # run this command from the respecitve appdata folder
+# for manual, local builds
 
 docker build --no-cache -t claude-mcp:latest .
 docker build --no-cache -t strava-sync:latest .
