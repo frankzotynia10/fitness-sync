@@ -138,7 +138,6 @@ def register(mcp):
                     training_readiness,
                     hrv,
                     sleep_score,
-                    round(sleep_seconds::numeric / 3600.0, 1) as sleep_hours,
                     round(deep_sleep_seconds::numeric / 60.0) as deep_sleep_min,
                     round(rem_sleep_seconds::numeric  / 60.0) as rem_sleep_min,
                     body_battery,
@@ -180,7 +179,7 @@ def register(mcp):
         else:
             result["weekly_strength"] = []
 
-        # 3. Weekly sleep summary — averages per week
+        # 3. Weekly sleep summary — averages per week from garmin_daily directly
         if dataset_exists("garmin_daily"):
             result["weekly_sleep"] = run_query("""
                 select
