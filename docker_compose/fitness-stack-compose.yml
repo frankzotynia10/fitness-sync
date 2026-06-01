@@ -7,12 +7,7 @@ services:
       - /mnt/user/appdata/fitness-sync/garmin/.env
     volumes:
       - /mnt/user/appdata/fitness-sync/garmin/tokens:/root/.garminconnect
-    command: >
-      sh -c "while true;
-      do echo 'Running Garmin sync...';
-      python garmin_sync.py;
-      sleep 3600;
-      done"
+    command: tail -f /dev/null
 
   strava-sync:
     image: ghcr.io/frankzotynia10/strava-sync:latest
@@ -22,12 +17,7 @@ services:
       - /mnt/user/appdata/fitness-sync/strava/.env
     volumes:
       - /mnt/user/appdata/fitness-sync/strava/tokens:/data
-    command: >
-      sh -c "while true;
-      do echo 'Running Strava sync...';
-      python strava_sync.py;
-      sleep 3600;
-      done"
+    command: tail -f /dev/null
 
   hevy-sync:
     image: ghcr.io/frankzotynia10/hevy-sync:latest
@@ -35,8 +25,4 @@ services:
     restart: unless-stopped
     env_file:
       - /mnt/user/appdata/fitness-sync/hevy/.env
-    command: >
-      sh -c "while true;
-      do python hevy_sync.py;
-      sleep 21600;
-      done"
+    command: tail -f /dev/null
