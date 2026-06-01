@@ -2,6 +2,10 @@
 
 Personal fitness data platform that syncs and centralizes data from multiple sources into PostgreSQL/Supabase for analytics and AI access.
 
+## CI/CD
+
+Images are built and pushed to GHCR via GitHub Actions on every push to `main`. On successful build, a webhook triggers n8n to pull and redeploy all containers via SSH.
+
 ## What this stack includes
 
 - **Supabase / PostgreSQL**
