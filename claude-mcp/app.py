@@ -10,7 +10,7 @@ else:
     mcp = FastMCP("Fitness Coach DB")
 
 # Register all tool modules
-from tools import generic, garmin, strava, nutrition, hevy, proposals
+from tools import generic, garmin, strava, nutrition, hevy, proposals, insights
 
 generic.register(mcp)
 garmin.register(mcp)
@@ -18,6 +18,7 @@ strava.register(mcp)
 nutrition.register(mcp)
 hevy.register(mcp)
 proposals.register(mcp)
+insights.register(mcp)
 
 if __name__ == "__main__":
     mcp.run(transport="http", host="0.0.0.0", port=8000)
