@@ -7,7 +7,8 @@ def register(mcp):
     def get_todays_context() -> dict:
         """Return today's complete snapshot: recovery signals (HRV, sleep, body battery,
         training readiness, resting HR, training load/status, weight), today's nutrition
-        (calories, protein, carbs, fat), and whether the user has trained or ridden today.
+        (calories, protein, carbs, fat), sleep notes if entered in Garmin Connect,
+        and whether the user has trained or ridden today.
         This is the single best first call for any coaching or check-in conversation."""
         rows = run_query("""
             SELECT
@@ -17,6 +18,7 @@ def register(mcp):
                 ROUND(g.sleep_seconds / 3600.0, 1) AS sleep_hours,
                 g.deep_sleep_seconds,
                 g.rem_sleep_seconds,
+                g.sleep_notes,
                 g.body_battery,
                 g.training_readiness,
                 g.resting_hr,
@@ -99,7 +101,7 @@ def register(mcp):
 
     @mcp.tool()
     def get_ride_power_trend(limit: int = 20) -> list:
-        """Return ride power trend over time — best 5-min and 20-min power, normalized
+        """Return ride power trend over time \u2014 best 5-min and 20-min power, normalized
         power (NP), distance, and duration per ride. Useful for tracking FTP progression
         and cycling fitness over time. All power values in watts, distance in miles,
         duration in hours. Only includes outdoor/virtual rides with power data."""

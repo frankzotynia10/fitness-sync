@@ -15,11 +15,11 @@ def register(mcp):
 
     @mcp.tool()
     def get_sleep_trend(days: int = 14) -> list:
-        """Return sleep score and total sleep duration over time."""
+        """Return sleep score, duration, and user notes over time."""
         if not dataset_exists("garmin_daily"):
             return [{"message": "garmin_daily table does not exist yet."}]
         return run_query("""
-            select date, sleep_score, sleep_seconds, awake_seconds
+            select date, sleep_score, sleep_seconds, awake_seconds, sleep_notes
             from garmin_daily order by date desc limit %s
         """, (clamp_limit(days, 1, 180),))
 
@@ -30,7 +30,7 @@ def register(mcp):
             return [{"message": "garmin_daily table does not exist yet."}]
         return run_query("""
             select date, deep_sleep_seconds, light_sleep_seconds,
-                   rem_sleep_seconds, awake_seconds, sleep_seconds, sleep_score
+                   rem_sleep_seconds, awake_seconds, sleep_seconds, sleep_score, sleep_notes
             from garmin_daily order by date desc limit %s
         """, (clamp_limit(days, 1, 180),))
 
@@ -85,16 +85,17 @@ def register(mcp):
     @mcp.tool()
     def get_recovery_signals(days: int = 14) -> list:
         """Return recovery-focused Garmin signals: readiness, HRV, body battery,
-        respiration, SpO2, stress, sleep stages, body composition."""
+        respiration, SpO2, stress, sleep stages, sleep notes, body composition."""
         if not dataset_exists("garmin_daily"):
             return [{"message": "garmin_daily table does not exist yet."}]
         cols = get_dataset_columns("garmin_daily")
         wanted = [
             "date", "training_readiness", "body_battery", "hrv", "resting_hr",
             "respiration_avg", "spo2_avg", "spo2_min", "stress_avg", "stress_max",
-            "sleep_score", "sleep_seconds", "deep_sleep_seconds", "light_sleep_seconds",
-            "rem_sleep_seconds", "awake_seconds", "recovery_time_hours",
-            "weight_kg", "body_fat_pct", "body_water", "muscle_mass", "bone_mass", "bmi",
+            "sleep_score", "sleep_seconds", "sleep_notes", "deep_sleep_seconds",
+            "light_sleep_seconds", "rem_sleep_seconds", "awake_seconds",
+            "recovery_time_hours", "weight_kg", "body_fat_pct", "body_water",
+            "muscle_mass", "bone_mass", "bmi",
         ]
         available = [c for c in wanted if c in cols]
         if len(available) <= 1:
@@ -130,7 +131,7 @@ def register(mcp):
         days = clamp_limit(weeks, 1, 12) * 7
         result = {}
 
-        # 1. Daily context — recovery + training load + nutrition + ride data
+        # 1. Daily context
         if dataset_exists("daily_training_nutrition_context"):
             result["daily"] = run_query("""
                 select
@@ -138,6 +139,7 @@ def register(mcp):
                     training_readiness,
                     hrv,
                     sleep_score,
+                    round(sleep_seconds::numeric / 3600.0, 1) as sleep_hours,
                     round(deep_sleep_seconds::numeric / 60.0) as deep_sleep_min,
                     round(rem_sleep_seconds::numeric  / 60.0) as rem_sleep_min,
                     body_battery,
@@ -179,7 +181,7 @@ def register(mcp):
         else:
             result["weekly_strength"] = []
 
-        # 3. Weekly sleep summary — averages per week from garmin_daily directly
+        # 3. Weekly sleep summary
         if dataset_exists("garmin_daily"):
             result["weekly_sleep"] = run_query("""
                 select
@@ -190,7 +192,8 @@ def register(mcp):
                     round(avg(deep_sleep_seconds / 60.0)::numeric) as avg_deep_sleep_min,
                     round(avg(rem_sleep_seconds / 60.0)::numeric) as avg_rem_sleep_min,
                     round(avg(hrv)::numeric, 1) as avg_hrv,
-                    round(avg(resting_hr)::numeric, 1) as avg_resting_hr
+                    round(avg(resting_hr)::numeric, 1) as avg_resting_hr,
+                    string_agg(sleep_notes, ' | ' order by date) filter (where sleep_notes is not null and sleep_notes <> '') as sleep_notes
                 from garmin_daily
                 where date >= current_date - (%s * interval '1 week')
                   and sleep_score is not null
@@ -200,7 +203,7 @@ def register(mcp):
         else:
             result["weekly_sleep"] = []
 
-        # 4. Recent rides — distance, duration, avg power, kJ
+        # 4. Recent rides
         if dataset_exists("strava_activities"):
             cols = get_dataset_columns("strava_activities")
             wanted = [
@@ -223,7 +226,7 @@ def register(mcp):
         else:
             result["recent_rides"] = []
 
-        # 5. ACWR summary — latest values only for quick reference
+        # 5. ACWR summary
         if dataset_exists("garmin_daily"):
             cols = get_dataset_columns("garmin_daily")
             acwr_cols = [c for c in [
