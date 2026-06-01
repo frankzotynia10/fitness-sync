@@ -31,31 +31,21 @@ def dump_payload(label, payload, max_len=30000):
 
 
 def validate_token_dir():
-    """
-    Check that the token directory exists and contains at least one token file.
-    Raises RuntimeError with a clear message if tokens are missing or expired indicators found.
-    """
     if not os.path.isdir(TOKEN_DIR):
         raise RuntimeError(
             f"GARMIN TOKEN ERROR: Token directory does not exist: {TOKEN_DIR}. "
             "Re-run login_once.py to re-authenticate."
         )
-
     token_files = [f for f in os.listdir(TOKEN_DIR) if not f.startswith('.')]
     if not token_files:
         raise RuntimeError(
             f"GARMIN TOKEN ERROR: Token directory is empty: {TOKEN_DIR}. "
             "Re-run login_once.py to re-authenticate."
         )
-
     print(f"Token directory OK: {TOKEN_DIR} ({len(token_files)} file(s): {token_files})")
 
 
 def validate_garmin_session(client):
-    """
-    Make a cheap API call after login to confirm the session is actually valid.
-    Raises RuntimeError if the session is broken (expired token, invalid auth, etc).
-    """
     try:
         name = client.get_full_name()
         print(f"Garmin session valid — authenticated as: {name}")
@@ -69,43 +59,30 @@ def validate_garmin_session(client):
 def normalize_weight_to_kg(raw_weight):
     if raw_weight is None:
         return None
-
     try:
         raw_weight = float(raw_weight)
     except Exception:
         return None
-
-    # Garmin often returns grams for scale weight
     if raw_weight > 500:
         return raw_weight / 1000.0
-
-    # Otherwise assume already kg
     return raw_weight
 
 
 def normalize_mass_to_kg(raw_value):
-    """
-    Garmin body composition masses (boneMass / muscleMass) often come back in grams.
-    Convert to kg if the number is too large to plausibly already be kg.
-    """
     if raw_value is None:
         return None
-
     try:
         raw_value = float(raw_value)
     except Exception:
         return None
-
     if raw_value > 200:
         return raw_value / 1000.0
-
     return raw_value
 
 
 def normalize_percentage(raw_value):
     if raw_value is None:
         return None
-
     try:
         return float(raw_value)
     except Exception:
@@ -113,28 +90,18 @@ def normalize_percentage(raw_value):
 
 
 def normalize_recovery_time_hours(raw_value):
-    """
-    Best-effort normalization:
-    - if value looks like milliseconds -> convert to hours
-    - if value looks like seconds -> convert to hours
-    - if value looks like minutes -> convert to hours
-    - else assume already hours
-    """
     if raw_value is None:
         return None
-
     try:
         v = float(raw_value)
     except Exception:
         return None
-
     if v > 100000:
-        return round(v / 3600000.0, 2)  # ms -> hr
+        return round(v / 3600000.0, 2)
     if v > 1000:
-        return round(v / 3600.0, 2)     # sec -> hr
+        return round(v / 3600.0, 2)
     if v > 72:
-        return round(v / 60.0, 2)       # min -> hr
-
+        return round(v / 60.0, 2)
     return round(v, 2)
 
 
@@ -157,9 +124,6 @@ def first_non_null(*values):
 
 
 def recursive_find_first(obj, key_names):
-    """
-    Recursively search dict/list payloads for the first non-null matching key.
-    """
     if isinstance(obj, dict):
         for k, v in obj.items():
             if k in key_names and v is not None:
@@ -168,13 +132,11 @@ def recursive_find_first(obj, key_names):
             found = recursive_find_first(v, key_names)
             if found is not None:
                 return found
-
     elif isinstance(obj, list):
         for item in obj:
             found = recursive_find_first(item, key_names)
             if found is not None:
                 return found
-
     return None
 
 
@@ -209,15 +171,13 @@ def sync_date(client, target_date, conn, existing_cols):
     print(f"Syncing {day_str}...")
     print(f"{'='*50}")
 
-    # -------------------------------------------------
-    # Initialize all fields we might write
-    # -------------------------------------------------
     steps = None
     calories = None
     resting_hr = None
 
     sleep_seconds = None
     sleep_score = None
+    sleep_notes = None
     deep_sleep_seconds = None
     light_sleep_seconds = None
     rem_sleep_seconds = None
@@ -265,9 +225,7 @@ def sync_date(client, target_date, conn, existing_cols):
     monthly_load_anaerobic = None
     training_balance_feedback = None
 
-    # -------------------------------------------------
     # Basic daily stats
-    # -------------------------------------------------
     stats = client.get_stats(day_str)
     dump_payload("stats", stats)
 
@@ -275,9 +233,7 @@ def sync_date(client, target_date, conn, existing_cols):
     calories = stats.get("totalKilocalories")
     resting_hr = stats.get("restingHeartRate")
 
-    # -------------------------------------------------
-    # Sleep + Sleep Score + Sleep Stages
-    # -------------------------------------------------
+    # Sleep + Sleep Score + Sleep Stages + User Note
     try:
         sleep_data = client.get_sleep_data(day_str)
         dump_payload("sleep_data", sleep_data)
@@ -285,6 +241,7 @@ def sync_date(client, target_date, conn, existing_cols):
         daily_sleep = sleep_data.get("dailySleepDTO", {})
 
         sleep_seconds = daily_sleep.get("sleepTimeSeconds")
+        sleep_notes = daily_sleep.get("userNote") or None
 
         sleep_score = (
             daily_sleep.get("sleepScores", {})
@@ -319,9 +276,7 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Sleep fetch failed: {e}")
 
-    # -------------------------------------------------
     # Body Battery
-    # -------------------------------------------------
     try:
         body_battery_data = client.get_body_battery(day_str)
         dump_payload("body_battery_data", body_battery_data)
@@ -329,16 +284,13 @@ def sync_date(client, target_date, conn, existing_cols):
         if isinstance(body_battery_data, list) and body_battery_data:
             first_entry = body_battery_data[0]
             values = first_entry.get("bodyBatteryValuesArray", [])
-
             if values:
                 body_battery = values[-1][1]
 
     except Exception as e:
         print(f"Body battery fetch failed: {e}")
 
-    # -------------------------------------------------
     # HRV
-    # -------------------------------------------------
     try:
         hrv_data = client.get_hrv_data(day_str)
         dump_payload("hrv_data", hrv_data)
@@ -359,9 +311,7 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"HRV fetch failed: {e}")
 
-    # -------------------------------------------------
     # Training Readiness
-    # -------------------------------------------------
     try:
         readiness_data = client.get_training_readiness(day_str)
         dump_payload("training_readiness", readiness_data)
@@ -374,9 +324,7 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Training readiness fetch failed: {e}")
 
-    # -------------------------------------------------
     # VO2 Max + Heat Acclimation
-    # -------------------------------------------------
     try:
         max_metrics = client.get_max_metrics(day_str)
         dump_payload("max_metrics", max_metrics)
@@ -402,9 +350,7 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Max metrics fetch failed: {e}")
 
-    # -------------------------------------------------
     # Stress
-    # -------------------------------------------------
     try:
         stress_data = client.get_stress_data(day_str)
         dump_payload("stress_data", stress_data)
@@ -415,9 +361,7 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Stress fetch failed: {e}")
 
-    # -------------------------------------------------
     # Endurance Score
-    # -------------------------------------------------
     try:
         week_start = target_date - datetime.timedelta(days=target_date.weekday())
         week_start_str = week_start.isoformat()
@@ -434,9 +378,7 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Endurance score fetch failed: {e}")
 
-    # -------------------------------------------------
     # Training Load / Status
-    # -------------------------------------------------
     training_status_data = (
         call_if_exists(client, "get_training_status", day_str)
         or call_if_exists(client, "get_training_status_data", day_str)
@@ -454,14 +396,10 @@ def sync_date(client, target_date, conn, existing_cols):
 
         if isinstance(latest_status, dict):
             acute_dto = latest_status.get("acuteTrainingLoadDTO", {})
-
             weekly_training_load = latest_status.get("weeklyTrainingLoad")
-
             acute_training_load = acute_dto.get("dailyTrainingLoadAcute")
             chronic_training_load = acute_dto.get("dailyTrainingLoadChronic")
-
             training_load = weekly_training_load if weekly_training_load is not None else acute_training_load
-
             training_status = (
                 latest_status.get("trainingStatusFeedbackPhrase")
                 or (
@@ -470,7 +408,6 @@ def sync_date(client, target_date, conn, existing_cols):
                     else None
                 )
             )
-
             acwr_ratio = acute_dto.get("dailyAcuteChronicWorkloadRatio")
             acwr_percent = acute_dto.get("acwrPercent")
 
@@ -487,9 +424,7 @@ def sync_date(client, target_date, conn, existing_cols):
             monthly_load_anaerobic = latest_balance.get("monthlyLoadAnaerobic")
             training_balance_feedback = latest_balance.get("trainingBalanceFeedbackPhrase")
 
-    # -------------------------------------------------
     # Recovery Time
-    # -------------------------------------------------
     recovery_time_data = (
         call_if_exists(client, "get_recovery_time", day_str)
         or call_if_exists(client, "get_recovery_time_data", day_str)
@@ -500,22 +435,14 @@ def sync_date(client, target_date, conn, existing_cols):
 
         raw_recovery = first_non_null(
             recursive_find_first(recovery_time_data, {
-                "recoveryTime",
-                "recoveryTimeHrs",
-                "recoveryHours",
-                "recoveryTimeHours",
-                "recoveryTimeInSeconds",
-                "recoveryTimeSeconds",
-                "recoveryTimeMillis",
-                "remainingRecoveryTime"
+                "recoveryTime", "recoveryTimeHrs", "recoveryHours",
+                "recoveryTimeHours", "recoveryTimeInSeconds",
+                "recoveryTimeSeconds", "recoveryTimeMillis", "remainingRecoveryTime"
             })
         )
-
         recovery_time_hours = normalize_recovery_time_hours(raw_recovery)
 
-    # -------------------------------------------------
-    # Daily weigh-ins (preferred source for scale/body-comp)
-    # -------------------------------------------------
+    # Daily weigh-ins
     try:
         weigh_ins_data = client.get_daily_weigh_ins(day_str)
         dump_payload("daily_weigh_ins", weigh_ins_data)
@@ -535,20 +462,17 @@ def sync_date(client, target_date, conn, existing_cols):
 
         if entries:
             latest = entries[-1]
-
             raw_weight = (
                 latest.get("weight")
                 or latest.get("weightKG")
                 or latest.get("weightKilograms")
             )
             weight_kg = normalize_weight_to_kg(raw_weight)
-
             body_fat_pct = (
                 latest.get("bodyFat")
                 or latest.get("percentFat")
                 or latest.get("bodyFatPercentage")
             )
-
             bmi = latest.get("bmi")
             body_water = normalize_percentage(latest.get("bodyWater"))
             bone_mass = normalize_mass_to_kg(latest.get("boneMass"))
@@ -560,9 +484,7 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Daily weigh-ins fetch failed: {e}")
 
-    # -------------------------------------------------
-    # stats_and_body fallback + respiration/spo2/intensity minutes
-    # -------------------------------------------------
+    # stats_and_body fallback
     try:
         stats_and_body = client.get_stats_and_body(day_str)
         dump_payload("stats_and_body", stats_and_body)
@@ -575,14 +497,12 @@ def sync_date(client, target_date, conn, existing_cols):
                     or stats_and_body.get("weightKilograms")
                 )
                 weight_kg = normalize_weight_to_kg(raw_weight)
-
             if body_fat_pct is None:
                 body_fat_pct = (
                     stats_and_body.get("bodyFat")
                     or stats_and_body.get("percentFat")
                     or stats_and_body.get("bodyFatPercentage")
                 )
-
             if bmi is None:
                 bmi = stats_and_body.get("bmi")
             if body_water is None:
@@ -601,22 +521,20 @@ def sync_date(client, target_date, conn, existing_cols):
             respiration_avg = stats_and_body.get("avgWakingRespirationValue")
             spo2_avg = stats_and_body.get("averageSpo2")
             spo2_min = stats_and_body.get("lowestSpo2")
-
             intensity_minutes_moderate = stats_and_body.get("moderateIntensityMinutes")
             intensity_minutes_vigorous = stats_and_body.get("vigorousIntensityMinutes")
 
     except Exception as e:
         print(f"Stats/body fetch failed: {e}")
 
-    # -------------------------------------------------
     # Build row payload and upsert
-    # -------------------------------------------------
     row_data = {
         "date": target_date,
         "steps": steps,
         "calories": calories,
         "resting_hr": resting_hr,
         "sleep_seconds": sleep_seconds,
+        "sleep_notes": sleep_notes,
         "body_battery": body_battery,
         "training_readiness": training_readiness,
         "hrv": hrv,
@@ -700,13 +618,11 @@ def main():
     print(f"Syncing last {LOOKBACK_DAYS} days (today + {LOOKBACK_DAYS - 1} prior)...")
 
     try:
-        # Validate tokens exist before attempting login
         validate_token_dir()
 
         client = Garmin()
         client.login(tokenstore=TOKEN_DIR)
 
-        # Validate session is actually working
         validate_garmin_session(client)
 
         print("Connecting to Postgres...")
