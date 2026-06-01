@@ -1,7 +1,6 @@
 services:
   claude-mcp:
-    build: /mnt/user/appdata/fitness-sync/claude-mcp
-    image: claude-mcp:latest
+    image: ghcr.io/frankzotynia10/claude-mcp:latest
     container_name: claude-mcp
     restart: unless-stopped
     ports:

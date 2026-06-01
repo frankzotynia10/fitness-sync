@@ -1,6 +1,6 @@
 services:
   garmin-sync:
-    image: garmin-sync:latest
+    image: ghcr.io/frankzotynia10/garmin-sync:latest
     container_name: garmin-sync
     restart: unless-stopped
     env_file:
@@ -13,9 +13,9 @@ services:
       python garmin_sync.py;
       sleep 3600;
       done"
-      
+
   strava-sync:
-    image: strava-sync:latest
+    image: ghcr.io/frankzotynia10/strava-sync:latest
     container_name: strava-sync
     restart: unless-stopped
     env_file:
@@ -30,7 +30,7 @@ services:
       done"
 
   hevy-sync:
-    image: hevy-sync:latest
+    image: ghcr.io/frankzotynia10/hevy-sync:latest
     container_name: hevy-sync
     restart: unless-stopped
     env_file:
