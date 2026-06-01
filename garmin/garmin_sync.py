@@ -30,6 +30,42 @@ def dump_payload(label, payload, max_len=30000):
         print(f"Could not dump {label}: {e}")
 
 
+def validate_token_dir():
+    """
+    Check that the token directory exists and contains at least one token file.
+    Raises RuntimeError with a clear message if tokens are missing or expired indicators found.
+    """
+    if not os.path.isdir(TOKEN_DIR):
+        raise RuntimeError(
+            f"GARMIN TOKEN ERROR: Token directory does not exist: {TOKEN_DIR}. "
+            "Re-run login_once.py to re-authenticate."
+        )
+
+    token_files = [f for f in os.listdir(TOKEN_DIR) if not f.startswith('.')]
+    if not token_files:
+        raise RuntimeError(
+            f"GARMIN TOKEN ERROR: Token directory is empty: {TOKEN_DIR}. "
+            "Re-run login_once.py to re-authenticate."
+        )
+
+    print(f"Token directory OK: {TOKEN_DIR} ({len(token_files)} file(s): {token_files})")
+
+
+def validate_garmin_session(client):
+    """
+    Make a cheap API call after login to confirm the session is actually valid.
+    Raises RuntimeError if the session is broken (expired token, invalid auth, etc).
+    """
+    try:
+        name = client.get_full_name()
+        print(f"Garmin session valid — authenticated as: {name}")
+    except Exception as e:
+        raise RuntimeError(
+            f"GARMIN TOKEN ERROR: Login succeeded but session is invalid: {e}. "
+            "Token may be expired. Re-run login_once.py to re-authenticate."
+        )
+
+
 def normalize_weight_to_kg(raw_weight):
     if raw_weight is None:
         return None
@@ -664,14 +700,14 @@ def main():
     print(f"Syncing last {LOOKBACK_DAYS} days (today + {LOOKBACK_DAYS - 1} prior)...")
 
     try:
+        # Validate tokens exist before attempting login
+        validate_token_dir()
+
         client = Garmin()
         client.login(tokenstore=TOKEN_DIR)
 
-        print("Garmin methods containing 'recovery':")
-        print([m for m in dir(client) if "recovery" in m.lower()])
-
-        print("Garmin methods containing body/weight/weigh:")
-        print([m for m in dir(client) if any(x in m.lower() for x in ["body", "weight", "weigh"])])
+        # Validate session is actually working
+        validate_garmin_session(client)
 
         print("Connecting to Postgres...")
         conn = psycopg2.connect(
