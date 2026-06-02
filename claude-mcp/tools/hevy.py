@@ -19,7 +19,7 @@ def register(mcp):
     @mcp.tool()
     def get_routine_summary() -> dict:
         """Return all Hevy routines in a single call with weights displayed in lbs.
-        Organized by routine → exercise → sets. Use this instead of calling
+        Organized by routine -> exercise -> sets. Use this instead of calling
         get_hevy_routine_detail four times."""
         if not relation_exists("hevy_routine_context"):
             return {"message": "hevy_routine_context view does not exist yet."}
@@ -41,7 +41,6 @@ def register(mcp):
             order by routine_title, exercise_index, set_index
         """)
 
-        # Build nested structure: {routine → [exercises → [sets]]}
         routines = {}
         for row in rows:
             rt = row["routine_title"]
@@ -68,7 +67,6 @@ def register(mcp):
                 "reps":       row["reps"],
             })
 
-        # Flatten exercise dicts to lists
         result = {}
         for routine_title, exercises in routines.items():
             result[routine_title] = [
@@ -165,3 +163,48 @@ def register(mcp):
             rows = run_query("select * from activity_recovery_daily order by activity_date desc limit 1")
             latest_activity = rows[0] if rows else None
         return {"latest_daily": latest_daily, "latest_activity": latest_activity}
+
+    @mcp.tool()
+    def get_push_pull_legs_balance(weeks: int = 4) -> list:
+        """Return weekly push/pull/legs volume balance. Shows sets and volume load
+        per movement pattern per week. Useful for spotting muscle group imbalances
+        and ensuring balanced programming across upper/lower body and push/pull patterns.
+        Movement patterns: Push (chest/shoulders/triceps), Pull (back/biceps), Legs (quads/hamstrings/glutes/calves)."""
+        if not dataset_exists("hevy_workout_sets"):
+            return [{"message": "hevy_workout_sets table does not exist yet."}]
+        if not dataset_exists("hevy_exercise_muscle_map"):
+            return [{"message": "hevy_exercise_muscle_map table does not exist yet."}]
+
+        return run_query("""
+            WITH mapped AS (
+                SELECT
+                    hw.start_time::date AS workout_date,
+                    date_trunc('week', hw.start_time)::date AS week_start,
+                    hwe.title AS exercise_name,
+                    hws.weight_kg,
+                    hws.reps,
+                    hws.set_type,
+                    CASE
+                        WHEN hemm.primary_muscle_group IN ('chest', 'shoulders', 'triceps') THEN 'Push'
+                        WHEN hemm.primary_muscle_group IN ('back', 'biceps', 'lats', 'traps', 'rear_delts') THEN 'Pull'
+                        WHEN hemm.primary_muscle_group IN ('quads', 'hamstrings', 'glutes', 'calves', 'abductors', 'adductors') THEN 'Legs'
+                        WHEN hemm.primary_muscle_group IN ('abs', 'core') THEN 'Core'
+                        ELSE 'Other'
+                    END AS movement_pattern
+                FROM hevy_workout_sets hws
+                JOIN hevy_workouts hw ON hw.workout_id = hws.workout_id
+                JOIN hevy_workout_exercises hwe ON hwe.workout_id = hws.workout_id
+                    AND hwe.exercise_index = hws.exercise_index
+                LEFT JOIN hevy_exercise_muscle_map hemm ON hemm.exercise_name = hwe.title
+                WHERE hws.set_type = 'normal'
+                  AND hw.start_time >= CURRENT_DATE - (%s * INTERVAL '1 week')
+            )
+            SELECT
+                week_start,
+                movement_pattern,
+                COUNT(*) AS total_sets,
+                ROUND(SUM(COALESCE(weight_kg, 0) * COALESCE(reps, 0) * 2.20462)::numeric, 0) AS volume_load_lb
+            FROM mapped
+            GROUP BY week_start, movement_pattern
+            ORDER BY week_start DESC, movement_pattern
+        """, (clamp_limit(weeks, 1, 52),))

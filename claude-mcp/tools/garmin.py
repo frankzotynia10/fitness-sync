@@ -115,6 +115,53 @@ def register(mcp):
                          (clamp_limit(days, 1, 180),))
 
     @mcp.tool()
+    def get_body_composition_trend(days: int = 90) -> dict:
+        """Return body composition trend over time: weight in lbs, body fat percentage,
+        muscle mass, and BMI. Useful for tracking body recomposition progress.
+        Returns trend data plus summary stats (start, current, change)."""
+        if not dataset_exists("garmin_daily"):
+            return {"message": "garmin_daily table does not exist yet."}
+
+        rows = run_query("""
+            SELECT
+                date,
+                ROUND((weight_kg * 2.20462)::numeric, 1) AS weight_lb,
+                ROUND(weight_kg::numeric, 2) AS weight_kg,
+                ROUND(body_fat_pct::numeric, 1) AS body_fat_pct,
+                ROUND((muscle_mass * 2.20462)::numeric, 1) AS muscle_mass_lb,
+                ROUND(bmi::numeric, 1) AS bmi
+            FROM garmin_daily
+            WHERE weight_kg IS NOT NULL
+              AND date >= CURRENT_DATE - (%s * INTERVAL '1 day')
+            ORDER BY date DESC
+        """, (clamp_limit(days, 7, 365),))
+
+        if not rows:
+            return {"message": "No body composition data found."}
+
+        current = rows[0]
+        oldest = rows[-1]
+
+        weight_change = None
+        fat_change = None
+        if current["weight_lb"] and oldest["weight_lb"]:
+            weight_change = round(float(current["weight_lb"]) - float(oldest["weight_lb"]), 1)
+        if current["body_fat_pct"] and oldest["body_fat_pct"]:
+            fat_change = round(float(current["body_fat_pct"]) - float(oldest["body_fat_pct"]), 1)
+
+        return {
+            "current_weight_lb": current["weight_lb"],
+            "current_body_fat_pct": current["body_fat_pct"],
+            "start_weight_lb": oldest["weight_lb"],
+            "start_body_fat_pct": oldest["body_fat_pct"],
+            "start_date": str(oldest["date"]),
+            "weight_change_lb": weight_change,
+            "body_fat_change_pct": fat_change,
+            "days_tracked": len(rows),
+            "history": rows,
+        }
+
+    @mcp.tool()
     def get_weekly_coaching_context(weeks: int = 2) -> dict:
         """Return a single combined coaching context for weekly planning.
         Joins recovery signals, training load, ride volume, strength volume,
@@ -131,7 +178,6 @@ def register(mcp):
         days = clamp_limit(weeks, 1, 12) * 7
         result = {}
 
-        # 1. Daily context — join garmin_daily for sleep columns not in the view
         if dataset_exists("daily_training_nutrition_context"):
             result["daily"] = run_query("""
                 SELECT
@@ -173,7 +219,6 @@ def register(mcp):
         else:
             result["daily"] = []
 
-        # 2. Weekly strength volume
         if dataset_exists("hevy_weekly_volume"):
             result["weekly_strength"] = run_query("""
                 select * from hevy_weekly_volume
@@ -183,7 +228,6 @@ def register(mcp):
         else:
             result["weekly_strength"] = []
 
-        # 3. Weekly sleep summary
         if dataset_exists("garmin_daily"):
             result["weekly_sleep"] = run_query("""
                 SELECT
@@ -206,7 +250,6 @@ def register(mcp):
         else:
             result["weekly_sleep"] = []
 
-        # 4. Recent rides
         if dataset_exists("strava_activities"):
             cols = get_dataset_columns("strava_activities")
             wanted = [
@@ -229,7 +272,6 @@ def register(mcp):
         else:
             result["recent_rides"] = []
 
-        # 5. ACWR summary
         if dataset_exists("garmin_daily"):
             cols = get_dataset_columns("garmin_daily")
             acwr_cols = [c for c in [

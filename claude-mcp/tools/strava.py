@@ -100,3 +100,41 @@ def register(mcp):
             order by sa.activity_date desc
             limit %s
         """, (window_sec, clamp_limit(limit, 1, 100)))
+
+    @mcp.tool()
+    def get_ftp_history(limit: int = 20) -> dict:
+        """Return FTP progression over time estimated from best 20-minute power (95% of 20-min best).
+        Also returns current estimated FTP, best ever, and the ride it came from.
+        Useful for tracking cycling fitness improvements over weeks and months."""
+        if not relation_exists("activity_best_efforts"):
+            return {"message": "activity_best_efforts table does not exist yet."}
+
+        rows = run_query("""
+            SELECT
+                sa.activity_date::date AS ride_date,
+                sa.name AS ride_name,
+                ROUND(abe.best_avg_power_w::numeric, 1) AS best_20m_watts,
+                ROUND((abe.best_avg_power_w * 0.95)::numeric, 0) AS ftp_estimate_w,
+                ROUND(sa.weighted_average_watts::numeric, 0) AS normalized_power,
+                ROUND((sa.distance_m / 1609.34)::numeric, 1) AS distance_mi
+            FROM activity_best_efforts abe
+            JOIN strava_activities sa ON sa.strava_activity_id = abe.activity_id
+            WHERE abe.window_sec = 1200
+              AND sa.sport_type IN ('Ride', 'VirtualRide', 'EBikeRide')
+              AND abe.best_avg_power_w IS NOT NULL
+            ORDER BY sa.activity_date DESC
+            LIMIT %s
+        """, (clamp_limit(limit, 1, 100),))
+
+        if not rows:
+            return {"message": "No 20-minute best efforts found yet."}
+
+        best_row = max(rows, key=lambda r: r["ftp_estimate_w"] or 0)
+
+        return {
+            "current_ftp_estimate_w": rows[0]["ftp_estimate_w"],
+            "best_ever_ftp_estimate_w": best_row["ftp_estimate_w"],
+            "best_ever_ride": best_row["ride_name"],
+            "best_ever_ride_date": str(best_row["ride_date"]),
+            "history": rows,
+        }
