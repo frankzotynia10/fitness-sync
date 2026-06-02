@@ -15,7 +15,7 @@ def register(mcp):
                 g.date,
                 g.hrv,
                 g.sleep_score,
-                ROUND(g.sleep_seconds / 3600.0, 1) AS sleep_hours,
+                ROUND((g.sleep_seconds / 3600.0)::numeric, 1) AS sleep_hours,
                 g.deep_sleep_seconds,
                 g.rem_sleep_seconds,
                 g.sleep_notes,
@@ -27,7 +27,7 @@ def register(mcp):
                 ROUND(
                     CASE
                         WHEN g.chronic_training_load > 0
-                        THEN g.acute_training_load / g.chronic_training_load
+                        THEN (g.acute_training_load / g.chronic_training_load)::numeric
                         ELSE NULL
                     END, 2
                 ) AS acwr,

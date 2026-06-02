@@ -131,42 +131,44 @@ def register(mcp):
         days = clamp_limit(weeks, 1, 12) * 7
         result = {}
 
-        # 1. Daily context
+        # 1. Daily context — join garmin_daily for sleep columns not in the view
         if dataset_exists("daily_training_nutrition_context"):
             result["daily"] = run_query("""
-                select
-                    date,
-                    training_readiness,
-                    hrv,
-                    sleep_score,
-                    round(sleep_seconds::numeric / 3600.0, 1) as sleep_hours,
-                    round(deep_sleep_seconds::numeric / 60.0) as deep_sleep_min,
-                    round(rem_sleep_seconds::numeric  / 60.0) as rem_sleep_min,
-                    body_battery,
-                    training_load,
-                    acute_training_load,
-                    chronic_training_load,
-                    round(
-                        case
-                            when chronic_training_load > 0
-                            then (acute_training_load / chronic_training_load)::numeric
-                            else null
-                        end, 2
-                    ) as acwr,
-                    training_status,
-                    respiration_avg,
-                    spo2_avg,
-                    round(nutrition_calories::numeric)   as calories,
-                    round(protein_g::numeric)            as protein_g,
-                    round(carbs_g::numeric)              as carbs_g,
-                    round(fat_g::numeric)                as fat_g,
-                    round(ride_kj::numeric)              as ride_kj,
-                    ride_count,
-                    round(strength_volume_load::numeric) as strength_volume_load,
-                    round(strength_avg_rpe::numeric, 1)  as strength_avg_rpe
-                from daily_training_nutrition_context
-                order by date desc
-                limit %s
+                SELECT
+                    d.date,
+                    d.training_readiness,
+                    d.hrv,
+                    d.sleep_score,
+                    ROUND((g.sleep_seconds / 3600.0)::numeric, 1) AS sleep_hours,
+                    ROUND((g.deep_sleep_seconds / 60.0)::numeric) AS deep_sleep_min,
+                    ROUND((g.rem_sleep_seconds / 60.0)::numeric) AS rem_sleep_min,
+                    g.sleep_notes,
+                    d.body_battery,
+                    d.training_load,
+                    d.acute_training_load,
+                    d.chronic_training_load,
+                    ROUND(
+                        CASE
+                            WHEN d.chronic_training_load > 0
+                            THEN (d.acute_training_load / d.chronic_training_load)::numeric
+                            ELSE NULL
+                        END, 2
+                    ) AS acwr,
+                    d.training_status,
+                    d.respiration_avg,
+                    d.spo2_avg,
+                    ROUND(d.nutrition_calories::numeric) AS calories,
+                    ROUND(d.protein_g::numeric)          AS protein_g,
+                    ROUND(d.carbs_g::numeric)            AS carbs_g,
+                    ROUND(d.fat_g::numeric)              AS fat_g,
+                    ROUND(d.ride_kj::numeric)            AS ride_kj,
+                    d.ride_count,
+                    ROUND(d.strength_volume_load::numeric) AS strength_volume_load,
+                    ROUND(d.strength_avg_rpe::numeric, 1)  AS strength_avg_rpe
+                FROM daily_training_nutrition_context d
+                LEFT JOIN garmin_daily g ON g.date = d.date
+                ORDER BY d.date DESC
+                LIMIT %s
             """, (days,))
         else:
             result["daily"] = []
@@ -184,21 +186,22 @@ def register(mcp):
         # 3. Weekly sleep summary
         if dataset_exists("garmin_daily"):
             result["weekly_sleep"] = run_query("""
-                select
-                    date_trunc('week', date)::date as week_start,
-                    count(*) as days_with_data,
-                    round(avg(sleep_score)::numeric, 1) as avg_sleep_score,
-                    round(avg(sleep_seconds / 3600.0)::numeric, 2) as avg_sleep_hours,
-                    round(avg(deep_sleep_seconds / 60.0)::numeric) as avg_deep_sleep_min,
-                    round(avg(rem_sleep_seconds / 60.0)::numeric) as avg_rem_sleep_min,
-                    round(avg(hrv)::numeric, 1) as avg_hrv,
-                    round(avg(resting_hr)::numeric, 1) as avg_resting_hr,
-                    string_agg(sleep_notes, ' | ' order by date) filter (where sleep_notes is not null and sleep_notes <> '') as sleep_notes
-                from garmin_daily
-                where date >= current_date - (%s * interval '1 week')
-                  and sleep_score is not null
-                group by date_trunc('week', date)
-                order by week_start desc
+                SELECT
+                    date_trunc('week', date)::date AS week_start,
+                    count(*) AS days_with_data,
+                    ROUND(avg(sleep_score)::numeric, 1) AS avg_sleep_score,
+                    ROUND(avg(sleep_seconds / 3600.0)::numeric, 2) AS avg_sleep_hours,
+                    ROUND(avg(deep_sleep_seconds / 60.0)::numeric) AS avg_deep_sleep_min,
+                    ROUND(avg(rem_sleep_seconds / 60.0)::numeric) AS avg_rem_sleep_min,
+                    ROUND(avg(hrv)::numeric, 1) AS avg_hrv,
+                    ROUND(avg(resting_hr)::numeric, 1) AS avg_resting_hr,
+                    string_agg(sleep_notes, ' | ' ORDER BY date)
+                        FILTER (WHERE sleep_notes IS NOT NULL AND sleep_notes <> '') AS sleep_notes
+                FROM garmin_daily
+                WHERE date >= current_date - (%s * interval '1 week')
+                  AND sleep_score IS NOT NULL
+                GROUP BY date_trunc('week', date)
+                ORDER BY week_start DESC
             """, (clamp_limit(weeks, 1, 12),))
         else:
             result["weekly_sleep"] = []
@@ -216,11 +219,11 @@ def register(mcp):
             available = [c for c in wanted if c in cols]
             select_sql = sql.SQL(", ").join(sql.Identifier(c) for c in available)
             query = sql.SQL("""
-                select {cols}
-                from public.strava_activities
-                where sport_type in ('Ride', 'VirtualRide', 'MountainBikeRide')
-                order by activity_date desc
-                limit 10
+                SELECT {cols}
+                FROM public.strava_activities
+                WHERE sport_type IN ('Ride', 'VirtualRide', 'MountainBikeRide')
+                ORDER BY activity_date DESC
+                LIMIT 10
             """).format(cols=select_sql)
             result["recent_rides"] = run_query_composed(query)
         else:
@@ -237,10 +240,10 @@ def register(mcp):
             if len(acwr_cols) > 1:
                 select_sql = sql.SQL(", ").join(sql.Identifier(c) for c in acwr_cols)
                 query = sql.SQL("""
-                    select {cols}
-                    from public.garmin_daily
-                    order by date desc
-                    limit 1
+                    SELECT {cols}
+                    FROM public.garmin_daily
+                    ORDER BY date DESC
+                    LIMIT 1
                 """).format(cols=select_sql)
                 rows = run_query_composed(query)
                 result["acwr_summary"] = rows[0] if rows else {}
