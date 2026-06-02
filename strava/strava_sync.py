@@ -25,6 +25,8 @@ DB_NAME = os.environ.get("DB_NAME", "postgres")
 DB_USER = os.environ.get("DB_USER", "postgres")
 DB_PASSWORD = os.environ["DB_PASSWORD"]
 
+STREAM_KEYS = ["time", "distance", "watts", "heartrate", "cadence", "velocity_smooth"]
+
 
 def load_tokens():
     with open(STRAVA_TOKENS_FILE, "r", encoding="utf-8") as f:
@@ -63,15 +65,8 @@ def fetch_recent_activities(access_token, page=1, per_page=30):
 
 
 def fetch_activity_streams(access_token, activity_id, keys=None):
-    """
-    Fetch streams for one activity.
-    Start narrow:
-      - time
-      - distance
-      - watts
-    """
     if keys is None:
-        keys = ["time", "distance", "watts"]
+        keys = STREAM_KEYS
 
     url = f"https://www.strava.com/api/v3/activities/{activity_id}/streams"
     headers = {"Authorization": f"Bearer {access_token}"}
@@ -169,25 +164,12 @@ def upsert_activities(conn, activities):
 
 
 def upsert_activity_streams(conn, activity_id, streams):
-    """
-    Store selected activity streams into strava_activity_streams.
-
-    Expected Strava response with key_by_type=true is usually:
-      {
-        "time": {"data": [...]},
-        "distance": {"data": [...]},
-        "watts": {"data": [...]}
-      }
-
-    If a stream is unavailable, Strava simply omits it.
-    """
     if not streams or not isinstance(streams, dict):
         print(f"⚠️ No stream payload for activity {activity_id}")
         return
 
     with conn:
         with conn.cursor() as cur:
-            # simplest approach: replace existing rows for the activity
             cur.execute(
                 "delete from strava_activity_streams where strava_activity_id = %s",
                 (activity_id,),
@@ -308,13 +290,10 @@ def main():
             password=DB_PASSWORD,
         )
 
-        # Ensure normalized power tables exist
         ensure_power_tables(conn)
 
-        # 1) Upsert activity summaries
         upsert_activities(conn, activities)
 
-        # 2) Fetch streams for ride-like activities only
         ride_candidates = [
             a for a in activities
             if a.get("sport_type") in ("Ride", "VirtualRide", "EBikeRide")
@@ -328,11 +307,7 @@ def main():
                 continue
 
             try:
-                streams = fetch_activity_streams(
-                    access_token,
-                    activity_id,
-                    keys=["time", "distance", "watts"],
-                )
+                streams = fetch_activity_streams(access_token, activity_id)
 
                 print(f"Raw streams response for activity {activity_id}:")
                 try:
@@ -340,10 +315,8 @@ def main():
                 except Exception as dump_err:
                     print(f"Could not dump streams for {activity_id}: {dump_err}")
 
-                # Existing raw Strava stream table
                 upsert_activity_streams(conn, activity_id, streams)
 
-                # New normalized stream + best-effort pipeline
                 start_time = parse_start_time(a.get("start_date"))
                 normalized_rows = normalize_strava_streams(
                     streams,
