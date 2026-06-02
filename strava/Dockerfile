@@ -6,6 +6,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY strava_sync.py .
+COPY backfill_streams.py .
 COPY services ./services
 
 CMD ["python", "strava_sync.py"]
