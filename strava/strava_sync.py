@@ -27,15 +27,8 @@ DB_PASSWORD = os.environ["DB_PASSWORD"]
 
 STREAM_KEYS = ["time", "distance", "watts", "heartrate", "cadence", "velocity_smooth"]
 
-# Generic Garmin strength activity names to match against
-GARMIN_STRENGTH_NAMES = [
-    "morning weight training",
-    "afternoon weight training",
-    "lunch weight training",
-    "evening weight training",
-    "weight training",
-    "strength training",
-]
+# Hevy-synced activity names to exclude — these already have set data from Hevy
+HEVY_ROUTINE_NAMES = ["arms1", "arms2", "legs1", "legs2", "legzz", "legs3"]
 
 
 def load_tokens():
@@ -100,7 +93,6 @@ def update_strava_activity(access_token, activity_id, name=None, description=Non
 def build_workout_description(workout_id, conn):
     """Build a text description of a Hevy workout for Strava."""
     with conn.cursor() as cur:
-        # Get workout metadata
         cur.execute("""
             SELECT title,
                    EXTRACT(EPOCH FROM (end_time - start_time)) / 60 AS duration_min
@@ -112,7 +104,6 @@ def build_workout_description(workout_id, conn):
             return None
         title, duration_min = row
 
-        # Get exercises and sets
         cur.execute("""
             SELECT
                 hwe.title AS exercise,
@@ -136,7 +127,6 @@ def build_workout_description(workout_id, conn):
     if not sets:
         return None
 
-    # Group sets by exercise
     exercises = {}
     notes_map = {}
     for exercise, ex_idx, set_idx, weight_kg, reps, rpe, set_type, notes in sets:
@@ -152,8 +142,6 @@ def build_workout_description(workout_id, conn):
     for ex_idx in sorted(exercises.keys()):
         ex = exercises[ex_idx]
         lines.append(ex["name"])
-
-        # Summarize sets — group identical sets
         set_summary = []
         prev = None
         count = 0
@@ -172,7 +160,6 @@ def build_workout_description(workout_id, conn):
             w, r = prev
             w_str = f"{w} lb" if w else "BW"
             set_summary.append(f"{count}×{r} @ {w_str}")
-
         lines.append("  " + " | ".join(set_summary))
         if ex_idx in notes_map:
             lines.append(f"  ✎ {notes_map[ex_idx]}")
@@ -180,11 +167,11 @@ def build_workout_description(workout_id, conn):
     return "\n".join(lines)
 
 
-def update_strength_descriptions(access_token, conn, lookback_days=3):
+def update_strength_descriptions(access_token, conn, lookback_days=7):
     """
     For each recent Hevy workout, find the matching Garmin WeightTraining
-    activity on Strava and update its name and description with Hevy set data.
-    Only updates activities with generic Garmin names.
+    activity on Strava (by timestamp, excluding Hevy-named activities)
+    and update its name and description with Hevy set data.
     """
     print(f"\nUpdating Strava strength descriptions (last {lookback_days} days)...")
 
@@ -202,13 +189,13 @@ def update_strength_descriptions(access_token, conn, lookback_days=3):
               ON sa.sport_type = 'WeightTraining'
              AND ABS(EXTRACT(EPOCH FROM (sa.activity_date - hw.start_time))) < 3600
             WHERE hw.start_time >= NOW() - (%s * INTERVAL '1 day')
-              AND LOWER(sa.name) = ANY(%s)
+              AND LOWER(sa.name) != LOWER(hw.title)
             ORDER BY hw.start_time DESC
-        """, (lookback_days, GARMIN_STRENGTH_NAMES))
+        """, (lookback_days,))
         matches = cur.fetchall()
 
     if not matches:
-        print("  No Garmin strength activities to update.")
+        print("  No strength activities to update.")
         return
 
     for workout_id, title, start_time, end_time, strava_id, strava_name in matches:
@@ -363,7 +350,7 @@ def main():
         upsert_activities(conn, activities)
 
         # Update Strava strength activity names + descriptions from Hevy data
-        update_strength_descriptions(access_token, conn, lookback_days=3)
+        update_strength_descriptions(access_token, conn, lookback_days=7)
 
         ride_candidates = [
             a for a in activities
