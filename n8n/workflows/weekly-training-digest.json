@@ -1,5 +1,0 @@
-{
-  "id": "sBzTdsfbKhDqcpt8",
-  "name": "Weekly Training Digest",
-  "description": "Every Sunday at 6:30 PM, queries Supabase directly for 7 days of training data and sends a digest via ntfy."
-}

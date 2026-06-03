@@ -1,5 +1,0 @@
-{
-  "id": "TcZCsA0hLblV87O1",
-  "name": "Postgres Weekly Backup",
-  "description": "Every Sunday at 23:30, pg_dump of supabase-db to /mnt/user/appdata/backups/postgres/. Keeps 30 days of dumps. Alerts via ntfy on failure."
-}

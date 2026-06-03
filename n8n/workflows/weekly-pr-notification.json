@@ -1,5 +1,0 @@
-{
-  "id": "raYGERYxjgq09IXP",
-  "name": "Weekly PR Notification",
-  "description": "Every Monday at 8AM, checks for estimated 1RM PRs set in the past 7 days and fires an ntfy notification. Only fires if actual PRs exist."
-}
