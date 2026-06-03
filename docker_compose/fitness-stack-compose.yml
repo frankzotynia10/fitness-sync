@@ -14,9 +14,11 @@ services:
     container_name: strava-sync
     restart: unless-stopped
     env_file:
+      - /mnt/user/appdata/fitness-sync/garmin/.env
       - /mnt/user/appdata/fitness-sync/strava/.env
     volumes:
       - /mnt/user/appdata/fitness-sync/strava/tokens:/data
+      - /mnt/user/appdata/fitness-sync/garmin/tokens:/root/.garminconnect
     command: tail -f /dev/null
 
   hevy-sync:
