@@ -1,0 +1,152 @@
+{
+  "name": "Postgres Weekly Backup",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtHour": 23,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      },
+      "id": "4ec26776-8ea9-4713-96f7-07bfc3269050",
+      "name": "Sunday 23:30",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "command": "mkdir -p /mnt/user/appdata/supabase/db/backups && docker exec supabase-db pg_dump -U postgres postgres > /mnt/user/appdata/supabase/db/backups/fitness_$(date +%Y%m%d).sql && find /mnt/user/appdata/supabase/db/backups -name \"*.sql\" -mtime +30 -delete"
+      },
+      "id": "ed45b9d9-390c-426c-b827-a431e3b6d627",
+      "name": "pg_dump to appdata",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        224,
+        0
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const code = $input.first().json.code;\nconst stderr = $input.first().json.stderr || '';\nif (code !== 0 || stderr.includes('error') || stderr.includes('Error')) {\n  return [{ json: { failed: true, code, stderr } }];\n}\nreturn [];"
+      },
+      "id": "383a0cd0-f2e6-43d3-bbaa-be74d960f359",
+      "name": "Check Dump Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.mayfairlabs.cloud/coaching",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "Postgres Backup Failed"
+            },
+            {
+              "name": "Priority",
+              "value": "high"
+            },
+            {
+              "name": "Tags",
+              "value": "rotating_light"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "options": {}
+      },
+      "id": "253116c1-7645-4f90-96b3-f4156a14a95a",
+      "name": "Alert Backup Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        0
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "kfWiUbqhnyVlOh4B",
+          "name": "NTFY Creds"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Sunday 23:30": {
+      "main": [
+        [
+          {
+            "node": "pg_dump to appdata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "pg_dump to appdata": {
+      "main": [
+        [
+          {
+            "node": "Check Dump Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Dump Result": {
+      "main": [
+        [
+          {
+            "node": "Alert Backup Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "fc01e305-611b-4f7c-adc8-9bdcd3abbc5b",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "cf8af063f4b00861f696be36143b8df9c23d46f2d3c2138e88880da835730e83"
+  },
+  "nodeGroups": [],
+  "id": "TcZCsA0hLblV87O1",
+  "tags": []
+}

@@ -1,0 +1,232 @@
+{
+  "name": "iOS Shortcuts Fitness Sync Trigger",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Fitness Sync Trigger\nPOST to `/webhook/fitness-sync` to restart all 3 sync containers.\n\nSet up SSH credential \"Andromeda SSH\" with host, username, and password before activating.",
+        "height": 200,
+        "width": 300,
+        "color": 2
+      },
+      "id": "ab5c6855-f335-4ba8-9a36-d97bcc846b31",
+      "name": "Sticky Note b0ce9afb",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        32,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fitness-sync",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "afa58fb0-8c52-42b6-b82f-2a62a0f5f514",
+      "name": "Sync Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        80,
+        -192
+      ],
+      "webhookId": "865bbbd2-bc6a-4559-a0a1-095057d99a57"
+    },
+    {
+      "parameters": {
+        "command": "docker exec garmin-sync python garmin_sync.py"
+      },
+      "id": "c0d1404f-17ee-4cd8-8bb1-a60a7c737a11",
+      "name": "Restart Garmin Sync",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        304,
+        -192
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "docker exec hevy-sync python hevy_sync.py"
+      },
+      "id": "1cd4254e-7abc-4cdc-a854-4d4f66ab1f13",
+      "name": "Restart Hevy Sync",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        528,
+        -192
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "docker exec strava-sync python strava_sync.py"
+      },
+      "id": "9b42d2e0-ef86-4fe4-8a4c-4915457abc95",
+      "name": "Restart Strava Sync",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        1184,
+        -192
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": {
+          "status": "ok",
+          "message": "Sync containers restarted"
+        },
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "0d12c93f-2cf9-4809-9feb-5edf531c6488",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        304,
+        48
+      ]
+    },
+    {
+      "parameters": {
+        "command": "docker exec hevy2garmin hevy2garmin sync"
+      },
+      "id": "7d90810d-c2e0-4983-aede-ac17a4582b70",
+      "name": "Restart hevy2garmin",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        736,
+        -192
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "docker exec strava-sync python strava_replace_activity.py"
+      },
+      "id": "fcd5dde5-658d-44a8-baf7-01aa1cb6b212",
+      "name": "Run Strava FIT Replace iOS",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        960,
+        -192
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Restart Garmin Sync": {
+      "main": [
+        [
+          {
+            "node": "Restart Hevy Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restart hevy2garmin": {
+      "main": [
+        [
+          {
+            "node": "Run Strava FIT Replace iOS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Strava FIT Replace iOS": {
+      "main": [
+        [
+          {
+            "node": "Restart Strava Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Trigger": {
+      "main": [
+        [
+          {
+            "node": "Respond OK",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Restart Garmin Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restart Hevy Sync": {
+      "main": [
+        [
+          {
+            "node": "Restart hevy2garmin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "d2d793e0-e7d5-485e-9b74-f3734a9b6a4d",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cf8af063f4b00861f696be36143b8df9c23d46f2d3c2138e88880da835730e83"
+  },
+  "nodeGroups": [],
+  "id": "zElKoRhuhpF7MAeX",
+  "tags": []
+}

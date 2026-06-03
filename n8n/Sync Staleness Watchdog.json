@@ -1,0 +1,156 @@
+{
+  "name": "Sync Staleness Watchdog",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "9a6d5f1f-364d-4ba6-a721-58bf048ea079",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  'garmin_daily' AS source,\n  MAX(date)::text AS latest_date,\n  CASE WHEN MAX(date) < CURRENT_DATE - INTERVAL '2 days' THEN 25 ELSE 0 END AS hours_since_sync,\n  1 AS threshold_hours\nFROM garmin_daily\nUNION ALL\nSELECT\n  'strava_activities',\n  MAX(activity_date)::date::text,\n  EXTRACT(EPOCH FROM (NOW() - MAX(updated_at))) / 3600,\n  72\nFROM strava_activities\nUNION ALL\nSELECT\n  'hevy_workouts',\n  MAX(start_time)::date::text,\n  EXTRACT(EPOCH FROM (NOW() - MAX(updated_at))) / 3600,\n  72\nFROM hevy_workouts\nUNION ALL\nSELECT\n  'daily_nutrition',\n  MAX(date)::text,\n  EXTRACT(EPOCH FROM (NOW() - MAX(updated_at))) / 3600,\n  26\nFROM daily_nutrition",
+        "options": {}
+      },
+      "id": "97d71257-c813-4fd3-9abd-820c0f1bb8f9",
+      "name": "Check Sync Staleness",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "ghb2ZdFWuKdHRoEJ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $(\"Check Sync Staleness\").all().map(i => i.json);\n\nconst stale = rows.filter(r => Number(r.hours_since_sync) > Number(r.threshold_hours));\n\nif (stale.length === 0) {\n  return [];\n}\n\nconst lines = [\"SYNC STALENESS ALERT\", \"\"];\nfor (const s of stale) {\n  const hrs = Math.round(Number(s.hours_since_sync));\n  lines.push(s.source + \": last synced \" + hrs + \"h ago (threshold: \" + s.threshold_hours + \"h)\");\n  lines.push(\"  Latest record: \" + s.latest_date);\n}\nlines.push(\"\");\nlines.push(\"Check containers on Andromeda.\");\n\nreturn [{ json: { message: lines.join(\"\\n\"), title: \"Sync Watchdog Alert\" } }];"
+      },
+      "id": "fd23bf86-df9e-4dca-a15c-e03a687090f2",
+      "name": "Build Stale Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.mayfairlabs.cloud/coaching",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "={{ $json.title }}"
+            },
+            {
+              "name": "Priority",
+              "value": "high"
+            },
+            {
+              "name": "Tags",
+              "value": "warning"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "={{ $json.message }}",
+        "options": {}
+      },
+      "id": "56936ade-36fa-4e59-893b-a6607c587a0d",
+      "name": "Send ntfy Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        656,
+        0
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "kfWiUbqhnyVlOh4B",
+          "name": "NTFY Creds"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Check Sync Staleness",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Sync Staleness": {
+      "main": [
+        [
+          {
+            "node": "Build Stale Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Stale Alert": {
+      "main": [
+        [
+          {
+            "node": "Send ntfy Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "aaeb27d2-d585-4d5d-baf8-bcdbd79647dd",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "cf8af063f4b00861f696be36143b8df9c23d46f2d3c2138e88880da835730e83"
+  },
+  "nodeGroups": [],
+  "id": "MqkEcboifh1Gehbj",
+  "tags": []
+}

@@ -1,0 +1,234 @@
+{
+  "name": "Weekly Training Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Weekly Training Digest\nRuns every Sunday at 6:30 PM.\nQueries Supabase directly via Postgres node, builds a digest, sends to ntfy/coaching.\n\nCredentials needed: \"n8n_readonly\" (Postgres) and \"ntfy\" (HTTP Header Auth).",
+        "height": 200,
+        "width": 300,
+        "color": 2
+      },
+      "id": "631987be-5311-4326-97ed-1e5f9824878e",
+      "name": "Sticky Note cfe924f3",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -48,
+        -272
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtHour": 18,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      },
+      "id": "0a027b9b-7e5e-4437-a4ef-050eb7907f1a",
+      "name": "Sunday 6:30 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT date, hrv, sleep_score, sleep_seconds, acute_training_load, chronic_training_load, training_status, weight_kg, body_fat_pct, body_battery, training_readiness FROM garmin_daily WHERE date >= CURRENT_DATE - INTERVAL '7 days' ORDER BY date DESC",
+        "options": {}
+      },
+      "id": "ce742f57-1f76-432d-b97f-73e84bdabff4",
+      "name": "Query Garmin 7 Days",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "ghb2ZdFWuKdHRoEJ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT name, activity_date, distance_m, moving_time_s, average_watts, weighted_average_watts, max_watts, average_heartrate FROM strava_activities WHERE sport_type = 'Ride' AND activity_date >= NOW() - INTERVAL '7 days' ORDER BY activity_date DESC",
+        "options": {}
+      },
+      "id": "1143da02-bad4-4b2d-94fc-10faa8aa232a",
+      "name": "Query Recent Rides",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        448,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "ghb2ZdFWuKdHRoEJ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT title, start_time FROM hevy_workouts WHERE start_time >= NOW() - INTERVAL '7 days' ORDER BY start_time DESC",
+        "options": {}
+      },
+      "id": "347d6178-474c-4425-8ca7-794aad551c6e",
+      "name": "Query Recent Workouts",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        672,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "ghb2ZdFWuKdHRoEJ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const garmin = $(\"Query Garmin 7 Days\").all().map(function(i) { return i.json; });\nconst rides = $(\"Query Recent Rides\").all().map(function(i) { return i.json; });\nconst workouts = $(\"Query Recent Workouts\").all().map(function(i) { return i.json; });\n\nconst withHRV = garmin.filter(function(d) { return d.hrv; });\nconst withSleep = garmin.filter(function(d) { return d.sleep_score; });\nconst avgHRV = withHRV.length ? Math.round(withHRV.reduce(function(s,d){return s+Number(d.hrv);},0)/withHRV.length) : null;\nconst avgSleep = withSleep.length ? Math.round(withSleep.reduce(function(s,d){return s+Number(d.sleep_score);},0)/withSleep.length) : null;\nconst latest = garmin.length ? garmin[0] : null;\nconst withWeight = garmin.filter(function(d){return d.weight_kg;});\nconst latestWeight = withWeight.length ? withWeight[0] : null;\n\nconst rideCount = rides.length;\nconst totalDistanceMi = rides.reduce(function(s,r){return s+(Number(r.distance_m)||0);},0)/1609.34;\nconst npList = rides.filter(function(r){return r.weighted_average_watts;}).map(function(r){return Number(r.weighted_average_watts);});\nconst bestNP = npList.length ? Math.max.apply(null,npList) : null;\nconst workoutCount = workouts.length;\nconst workoutNames = workouts.map(function(w){return w.title;}).join(\", \");\n\nvar lines = [];\nlines.push(\"WEEKLY TRAINING DIGEST\");\nlines.push(\"\");\nlines.push(\"RECOVERY\");\nlines.push(\"HRV avg: \" + (avgHRV ? avgHRV+\" ms\" : \"no data\"));\nlines.push(\"Sleep avg: \" + (avgSleep ? avgSleep+\"/100\" : \"no data\"));\nif (latest) {\n  lines.push(\"Acute load: \" + (latest.acute_training_load||\"n/a\"));\n  lines.push(\"Chronic load: \" + (latest.chronic_training_load||\"n/a\"));\n  lines.push(\"Status: \" + (latest.training_status||\"n/a\"));\n}\nif (latestWeight) {\n  lines.push(\"Weight: \" + Math.round(Number(latestWeight.weight_kg)*2.20462)+\" lb (\"+latestWeight.body_fat_pct+\"% bf)\");\n}\nlines.push(\"\");\nlines.push(\"RIDING (\" + rideCount + \" rides)\");\nlines.push(\"Distance: \" + totalDistanceMi.toFixed(1) + \" mi\");\nif (bestNP) lines.push(\"Best NP: \" + Math.round(bestNP) + \"W\");\nlines.push(\"\");\nlines.push(\"LIFTING (\" + workoutCount + \" sessions)\");\nif (workoutNames) lines.push(workoutNames);\nlines.push(\"\");\nlines.push(\"Open Claude for full analysis\");\nreturn [{ json: { message: lines.join(\"\\n\"), title: \"Weekly Training Digest\" } }];"
+      },
+      "id": "12974ea6-487b-4691-945c-a9729d822b0f",
+      "name": "Build Weekly Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.mayfairlabs.cloud/coaching",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "={{ $json.title }}"
+            },
+            {
+              "name": "Priority",
+              "value": "default"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "body": "={{ $json.message }}",
+        "options": {}
+      },
+      "id": "031f3ee5-04c9-47fa-8365-0ce96d43da4c",
+      "name": "Send ntfy Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        0
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "kfWiUbqhnyVlOh4B",
+          "name": "NTFY Creds"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Sunday 6:30 PM": {
+      "main": [
+        [
+          {
+            "node": "Query Garmin 7 Days",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Garmin 7 Days": {
+      "main": [
+        [
+          {
+            "node": "Query Recent Rides",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Recent Rides": {
+      "main": [
+        [
+          {
+            "node": "Query Recent Workouts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Recent Workouts": {
+      "main": [
+        [
+          {
+            "node": "Build Weekly Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Weekly Digest": {
+      "main": [
+        [
+          {
+            "node": "Send ntfy Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "ce45d1e8-ca5a-4f0a-860e-2971bcbfb8e2",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "cf8af063f4b00861f696be36143b8df9c23d46f2d3c2138e88880da835730e83"
+  },
+  "nodeGroups": [],
+  "id": "sBzTdsfbKhDqcpt8",
+  "tags": []
+}

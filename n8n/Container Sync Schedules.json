@@ -1,0 +1,638 @@
+{
+  "name": "Container Sync Schedules",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "id": "7b1aa4b3-0e91-46c4-99c8-3bfff626c753",
+      "name": "Garmin Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        64,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "command": "docker exec garmin-sync python garmin_sync.py"
+      },
+      "id": "38c5c5cc-f196-492e-b581-e8a7a7863778",
+      "name": "Run Garmin Sync",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        288,
+        -96
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours"
+            }
+          ]
+        }
+      },
+      "id": "ee344f43-a57e-4e1d-8436-6ef0bbaaebd7",
+      "name": "Strava Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        64,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "command": "docker exec strava-sync python strava_sync.py"
+      },
+      "id": "a75d6309-cab7-48e8-b160-7cd21a09bdff",
+      "name": "Run Strava Sync",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        288,
+        128
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "e0bb575a-f678-455d-ae28-00d0f2f149cf",
+      "name": "Hevy Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        64,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "command": "docker exec hevy-sync python hevy_sync.py"
+      },
+      "id": "52554b96-9d23-43a2-9bf2-c50566b1d18d",
+      "name": "Run Hevy Sync",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        288,
+        352
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.mayfairlabs.cloud/coaching",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "Garmin Sync Failed"
+            },
+            {
+              "name": "Priority",
+              "value": "high"
+            },
+            {
+              "name": "Tags",
+              "value": "rotating_light"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "options": {}
+      },
+      "id": "4d26bd2f-de4c-440a-b085-8a716f076aeb",
+      "name": "Alert Garmin Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        -96
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "kfWiUbqhnyVlOh4B",
+          "name": "NTFY Creds"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.mayfairlabs.cloud/coaching",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "Strava Sync Failed"
+            },
+            {
+              "name": "Priority",
+              "value": "high"
+            },
+            {
+              "name": "Tags",
+              "value": "rotating_light"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "options": {}
+      },
+      "id": "7c1f37af-7187-4dc4-b6a8-1eb6a9f33611",
+      "name": "Alert Strava Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        128
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "kfWiUbqhnyVlOh4B",
+          "name": "NTFY Creds"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.mayfairlabs.cloud/coaching",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "Hevy Sync Failed"
+            },
+            {
+              "name": "Priority",
+              "value": "high"
+            },
+            {
+              "name": "Tags",
+              "value": "rotating_light"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "options": {}
+      },
+      "id": "bdceb7a3-bc6c-4d12-b2d3-3ae0ed00f542",
+      "name": "Alert Hevy Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        352
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "kfWiUbqhnyVlOh4B",
+          "name": "NTFY Creds"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const code = $input.first().json.code;\nconst stderr = $input.first().json.stderr || '';\nif (code !== 0 || stderr.includes('Error') || stderr.includes('Traceback') || stderr.includes('Sync failed')) {\n  return [{ json: { failed: true, code, stderr, source: 'garmin' } }];\n}\nreturn [];"
+      },
+      "id": "fb633b56-4bf0-4f3c-9b55-039398de6566",
+      "name": "Check Garmin Exit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        -96
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const code = $input.first().json.code;\nconst stderr = $input.first().json.stderr || '';\nif (code !== 0 || stderr.includes('Error') || stderr.includes('Traceback') || stderr.includes('Sync failed')) {\n  return [{ json: { failed: true, code, stderr, source: 'strava' } }];\n}\nreturn [];"
+      },
+      "id": "7d5c7405-8000-4402-a38a-eb26288bcc80",
+      "name": "Check Strava Exit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        128
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const code = $input.first().json.code;\nconst stderr = $input.first().json.stderr || '';\nif (code !== 0 || stderr.includes('Error') || stderr.includes('Traceback') || stderr.includes('Sync failed')) {\n  return [{ json: { failed: true, code, stderr, source: 'hevy' } }];\n}\nreturn [];"
+      },
+      "id": "ba33e475-6173-4b99-9cf3-4a7d40361bcd",
+      "name": "Check Hevy Exit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        352
+      ]
+    },
+    {
+      "parameters": {
+        "command": "docker exec hevy2garmin hevy2garmin sync"
+      },
+      "id": "2a8c8d9f-6f28-4f3b-9043-7e00e824f2fe",
+      "name": "Run hevy2garmin",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        288,
+        576
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.mayfairlabs.cloud/coaching",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "Hevy2Garmin Sync Failed"
+            },
+            {
+              "name": "Priority",
+              "value": "high"
+            },
+            {
+              "name": "Tags",
+              "value": "rotating_light"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "options": {}
+      },
+      "id": "9435b4e8-4d27-4066-9246-a7bdb2434968",
+      "name": "Alert Hevy2Garmin Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        576
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "kfWiUbqhnyVlOh4B",
+          "name": "NTFY Creds"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "a4e389c5-e356-4c17-bbbb-fc3f99786e74",
+      "name": "Hevy2garmin Every 30 minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        64,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const code = $input.first().json.code;\nconst stderr = $input.first().json.stderr || '';\nif (code !== 0 || stderr.includes('Error') || stderr.includes('Traceback') || stderr.includes('Sync failed')) {\n  return [{ json: { failed: true, code, stderr, source: 'hevy2garmin' } }];\n}\nreturn [];"
+      },
+      "id": "8810b133-d0c4-46f7-a14a-9f0e7b754841",
+      "name": "Check hevy2garmin exit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        576
+      ]
+    },
+    {
+      "parameters": {
+        "command": "docker exec strava-sync python strava_replace_activity.py"
+      },
+      "id": "82ed936a-32df-4121-998f-190850136f28",
+      "name": "Run Strava FIT Replace",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        288,
+        816
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const code = $input.first().json.code;\nconst stderr = $input.first().json.stderr || '';\nconst stdout = $input.first().json.stdout || '';\nif (code !== 0 || stderr.includes('Traceback') || stdout.includes('❌')) {\n  return [{ json: { failed: true, code, stderr, stdout, source: 'strava-fit-replace' } }];\n}\nreturn [];"
+      },
+      "id": "cb42372b-4a27-48dc-8acc-1dc2f9aa386e",
+      "name": "Check FIT Replace Exit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        496,
+        816
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.mayfairlabs.cloud/coaching",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "Strava FIT Replace Failed"
+            },
+            {
+              "name": "Priority",
+              "value": "high"
+            },
+            {
+              "name": "Tags",
+              "value": "rotating_light"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "options": {}
+      },
+      "id": "5a2a00d1-e556-44d1-9195-4aee15e417fb",
+      "name": "Alert FIT Replace Failed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        816
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "kfWiUbqhnyVlOh4B",
+          "name": "NTFY Creds"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Garmin Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Run Garmin Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Strava Every Hour": {
+      "main": [
+        [
+          {
+            "node": "Run Strava Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hevy Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Run Hevy Sync",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Garmin Sync": {
+      "main": [
+        [
+          {
+            "node": "Check Garmin Exit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Run Strava Sync": {
+      "main": [
+        [
+          {
+            "node": "Check Strava Exit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Run Hevy Sync": {
+      "main": [
+        [
+          {
+            "node": "Check Hevy Exit",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Check Garmin Exit": {
+      "main": [
+        [
+          {
+            "node": "Alert Garmin Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Strava Exit": {
+      "main": [
+        [
+          {
+            "node": "Alert Strava Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Hevy Exit": {
+      "main": [
+        [
+          {
+            "node": "Alert Hevy Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run hevy2garmin": {
+      "main": [
+        [
+          {
+            "node": "Check hevy2garmin exit",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Run Strava FIT Replace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Hevy2garmin Every 30 minutes": {
+      "main": [
+        [
+          {
+            "node": "Run hevy2garmin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check hevy2garmin exit": {
+      "main": [
+        [
+          {
+            "node": "Alert Hevy2Garmin Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Strava FIT Replace": {
+      "main": [
+        [
+          {
+            "node": "Check FIT Replace Exit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check FIT Replace Exit": {
+      "main": [
+        [
+          {
+            "node": "Alert FIT Replace Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "4a8813fa-570f-4b50-bf27-776eb84cfabe",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "cf8af063f4b00861f696be36143b8df9c23d46f2d3c2138e88880da835730e83"
+  },
+  "nodeGroups": [],
+  "id": "uzGojsdcqglRhVr1",
+  "tags": []
+}

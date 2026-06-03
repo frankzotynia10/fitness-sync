@@ -1,0 +1,158 @@
+{
+  "name": "Weekly PR Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtDay": [
+                1
+              ],
+              "triggerAtHour": 8
+            }
+          ]
+        }
+      },
+      "id": "fe51a1d5-67e3-4474-b362-ae044001313d",
+      "name": "Monday 8AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH history AS (\n  SELECT\n    exercise_name,\n    workout_date,\n    best_estimated_1rm,\n    top_weight_kg,\n    avg_rpe,\n    MAX(best_estimated_1rm) OVER (\n      PARTITION BY exercise_name\n      ORDER BY workout_date\n      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING\n    ) AS prev_best_1rm\n  FROM hevy_exercise_progression\n  WHERE best_estimated_1rm IS NOT NULL\n)\nSELECT\n  exercise_name,\n  workout_date::text,\n  ROUND((best_estimated_1rm * 2.20462)::numeric, 1) AS estimated_1rm_lb,\n  ROUND((top_weight_kg * 2.20462)::numeric, 1) AS top_set_lb,\n  ROUND(avg_rpe::numeric, 1) AS avg_rpe,\n  ROUND((prev_best_1rm * 2.20462)::numeric, 1) AS prev_best_1rm_lb,\n  ROUND(((best_estimated_1rm - prev_best_1rm) * 2.20462)::numeric, 1) AS improvement_lb\nFROM history\nWHERE best_estimated_1rm > prev_best_1rm\n  AND workout_date >= CURRENT_DATE - INTERVAL '7 days'\nORDER BY workout_date DESC, exercise_name",
+        "options": {}
+      },
+      "id": "9184e8f9-e6a6-4bd7-920e-936cb9995afb",
+      "name": "Query Weekly PRs",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        224,
+        0
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "postgres": {
+          "id": "ghb2ZdFWuKdHRoEJ",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $(\"Query Weekly PRs\").all().map(i => i.json);\n\nif (rows.length === 0) {\n  return [];\n}\n\nconst lines = [\"NEW PRs THIS WEEK\", \"\"];\n\nfor (const r of rows) {\n  lines.push(r.exercise_name);\n  lines.push(\"  1RM: \" + r.estimated_1rm_lb + \" lb (+\" + r.improvement_lb + \" lb)\");\n  lines.push(\"  Top set: \" + r.top_set_lb + \" lb @ RPE \" + r.avg_rpe);\n  lines.push(\"\");\n}\n\nreturn [{ json: { message: lines.join(\"\\n\"), title: \"PR Alert\" } }];"
+      },
+      "id": "d0a6a3d4-1c41-4f62-accf-179ceb1bfdde",
+      "name": "Build PR Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.mayfairlabs.cloud/coaching",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpBasicAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Title",
+              "value": "={{ $json.title }}"
+            },
+            {
+              "name": "Priority",
+              "value": "default"
+            },
+            {
+              "name": "Tags",
+              "value": "trophy"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/plain",
+        "options": {}
+      },
+      "id": "92122be8-c868-48e8-807c-51bcf4c27953",
+      "name": "Send PR Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        672,
+        0
+      ],
+      "credentials": {
+        "httpBasicAuth": {
+          "id": "kfWiUbqhnyVlOh4B",
+          "name": "NTFY Creds"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Monday 8AM": {
+      "main": [
+        [
+          {
+            "node": "Query Weekly PRs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Weekly PRs": {
+      "main": [
+        [
+          {
+            "node": "Build PR Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build PR Message": {
+      "main": [
+        [
+          {
+            "node": "Send PR Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "b0ce8286-4bf1-4294-a172-13c27b8ac14b",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "cf8af063f4b00861f696be36143b8df9c23d46f2d3c2138e88880da835730e83"
+  },
+  "nodeGroups": [],
+  "id": "raYGERYxjgq09IXP",
+  "tags": []
+}

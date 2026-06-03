@@ -1,0 +1,286 @@
+{
+  "name": "Fitness Stack Deploy",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "fitness-deploy",
+        "options": {
+          "noResponseBody": true
+        }
+      },
+      "id": "6465752f-81de-4ce2-893f-d2c7a95cf1e9",
+      "name": "GitHub Deploy Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "ad7ceada-da4f-438b-9243-65611d80ee75"
+    },
+    {
+      "parameters": {
+        "command": "cd /boot/config/plugins/compose.manager/projects/fitness-sync && docker compose pull && docker compose up -d"
+      },
+      "id": "c0617b1a-4e44-4c6c-9788-9ca0b6a0bc31",
+      "name": "Deploy Fitness Stack",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        224,
+        0
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "cd /boot/config/plugins/compose.manager/projects/claude-mcp-001 && docker compose pull && docker compose up -d"
+      },
+      "id": "32a1c193-11d0-4670-b28d-b7a1e51076b8",
+      "name": "Deploy Claude MCP",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        640,
+        0
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "docker image prune -f"
+      },
+      "id": "71d72d64-5ec9-4e9d-9ece-9e0cadeb3c07",
+      "name": "Prune Orphan Images",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        832,
+        0
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "docker exec garmin-sync python garmin_sync.py"
+      },
+      "id": "4dc66f60-e789-4e7b-b203-0f8ae94f629a",
+      "name": "Sync Garmin",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        1056,
+        0
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "docker exec hevy-sync python hevy_sync.py"
+      },
+      "id": "e3ba8b59-2011-48b8-a6ae-df79ffe6d17c",
+      "name": "Sync Hevy",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        1264,
+        0
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "docker exec strava-sync python strava_sync.py"
+      },
+      "id": "2f69d0fa-fa9f-49b3-b135-f00f5ac838b1",
+      "name": "Sync Strava",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        1664,
+        0
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "docker exec hevy2garmin hevy2garmin sync"
+      },
+      "id": "cd2cab8f-c214-4f13-836a-b41932955acb",
+      "name": "Sync hevy2garmin",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        1472,
+        0
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "command": "cd /boot/config/plugins/compose.manager/projects/hevy2garmin && docker compose pull && docker compose up -d"
+      },
+      "id": "f411695a-1eb0-4a1b-8293-690fa5c63f36",
+      "name": "Deploy Hevy2Garmin",
+      "type": "n8n-nodes-base.ssh",
+      "typeVersion": 1,
+      "position": [
+        432,
+        0
+      ],
+      "credentials": {
+        "sshPassword": {
+          "id": "qfnxXDv3iSEWihed",
+          "name": "Andromeda SSH Root"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "GitHub Deploy Webhook": {
+      "main": [
+        [
+          {
+            "node": "Deploy Fitness Stack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deploy Fitness Stack": {
+      "main": [
+        [
+          {
+            "node": "Deploy Hevy2Garmin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Deploy Claude MCP": {
+      "main": [
+        [
+          {
+            "node": "Prune Orphan Images",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prune Orphan Images": {
+      "main": [
+        [
+          {
+            "node": "Sync Garmin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Garmin": {
+      "main": [
+        [
+          {
+            "node": "Sync Hevy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Hevy": {
+      "main": [
+        [
+          {
+            "node": "Sync hevy2garmin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync Strava": {
+      "main": [
+        []
+      ]
+    },
+    "Deploy Hevy2Garmin": {
+      "main": [
+        [
+          {
+            "node": "Deploy Claude MCP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sync hevy2garmin": {
+      "main": [
+        [
+          {
+            "node": "Sync Strava",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "ea30a74a-c581-4c02-92c9-7252b05c3c2c",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "cf8af063f4b00861f696be36143b8df9c23d46f2d3c2138e88880da835730e83"
+  },
+  "nodeGroups": [],
+  "id": "Xcz6WaDpiqfJzFlt",
+  "tags": []
+}
