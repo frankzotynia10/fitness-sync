@@ -27,9 +27,6 @@ DB_PASSWORD = os.environ["DB_PASSWORD"]
 
 STREAM_KEYS = ["time", "distance", "watts", "heartrate", "cadence", "velocity_smooth"]
 
-# Hevy-synced activity names to exclude — these already have set data from Hevy
-HEVY_ROUTINE_NAMES = ["arms1", "arms2", "legs1", "legs2", "legzz", "legs3"]
-
 
 def load_tokens():
     with open(STRAVA_TOKENS_FILE, "r", encoding="utf-8") as f:
@@ -170,8 +167,9 @@ def build_workout_description(workout_id, conn):
 def update_strength_descriptions(access_token, conn, lookback_days=7):
     """
     For each recent Hevy workout, find the matching Garmin WeightTraining
-    activity on Strava (by timestamp, excluding Hevy-named activities)
+    activity on Strava (by timestamp) that hasn't been description-updated yet,
     and update its name and description with Hevy set data.
+    Tracks completion via description_updated_at column.
     """
     print(f"\nUpdating Strava strength descriptions (last {lookback_days} days)...")
 
@@ -188,8 +186,8 @@ def update_strength_descriptions(access_token, conn, lookback_days=7):
             JOIN strava_activities sa
               ON sa.sport_type = 'WeightTraining'
              AND ABS(EXTRACT(EPOCH FROM (sa.activity_date - hw.start_time))) < 3600
+             AND sa.description_updated_at IS NULL
             WHERE hw.start_time >= NOW() - (%s * INTERVAL '1 day')
-              AND LOWER(sa.name) != LOWER(hw.title)
             ORDER BY hw.start_time DESC
         """, (lookback_days,))
         matches = cur.fetchall()
@@ -213,6 +211,14 @@ def update_strength_descriptions(access_token, conn, lookback_days=7):
                 name=title,
                 description=description,
             )
+            # Mark as updated in DB
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE strava_activities
+                        SET description_updated_at = NOW()
+                        WHERE strava_activity_id = %s
+                    """, (strava_id,))
             print(f"  ✅ Updated Strava activity {strava_id} -> '{title}'")
         except Exception as e:
             print(f"  ⚠️ Failed to update {strava_id}: {e}")
