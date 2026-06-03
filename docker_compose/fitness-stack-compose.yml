@@ -28,13 +28,12 @@ services:
     command: tail -f /dev/null
 
   hevy2garmin:
-    image: drkostas/hevy2garmin:latest
+    image: ghcr.io/frankzotynia10/hevy2garmin:latest
     container_name: hevy2garmin
     restart: unless-stopped
     env_file:
-      - /mnt/user/appdata/fitness-sync/garmin/.env
-      - /mnt/user/appdata/fitness-sync/hevy/.env
+      - /mnt/user/appdata/hevy2garmin/.env
     volumes:
       - /mnt/user/appdata/fitness-sync/garmin/tokens:/root/.garminconnect
-      - /mnt/user/appdata/fitness-sync/hevy2garmin:/root/.hevy2garmin
+      - /mnt/user/appdata/hevy2garmin:/root/.hevy2garmin
     command: tail -f /dev/null
