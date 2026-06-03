@@ -27,6 +27,16 @@ DB_PASSWORD = os.environ["DB_PASSWORD"]
 
 STREAM_KEYS = ["time", "distance", "watts", "heartrate", "cadence", "velocity_smooth"]
 
+# Generic Garmin strength activity names to match against
+GARMIN_STRENGTH_NAMES = [
+    "morning weight training",
+    "afternoon weight training",
+    "lunch weight training",
+    "evening weight training",
+    "weight training",
+    "strength training",
+]
+
 
 def load_tokens():
     with open(STRAVA_TOKENS_FILE, "r", encoding="utf-8") as f:
@@ -48,7 +58,6 @@ def refresh_access_token(refresh_token):
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
     }
-
     resp = requests.post(url, data=data, timeout=30)
     resp.raise_for_status()
     return resp.json()
@@ -58,7 +67,6 @@ def fetch_recent_activities(access_token, page=1, per_page=30):
     url = "https://www.strava.com/api/v3/athlete/activities"
     headers = {"Authorization": f"Bearer {access_token}"}
     params = {"page": page, "per_page": per_page}
-
     resp = requests.get(url, headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
@@ -67,17 +75,160 @@ def fetch_recent_activities(access_token, page=1, per_page=30):
 def fetch_activity_streams(access_token, activity_id, keys=None):
     if keys is None:
         keys = STREAM_KEYS
-
     url = f"https://www.strava.com/api/v3/activities/{activity_id}/streams"
     headers = {"Authorization": f"Bearer {access_token}"}
-    params = {
-        "keys": ",".join(keys),
-        "key_by_type": "true",
-    }
-
+    params = {"keys": ",".join(keys), "key_by_type": "true"}
     resp = requests.get(url, headers=headers, params=params, timeout=30)
     resp.raise_for_status()
     return resp.json()
+
+
+def update_strava_activity(access_token, activity_id, name=None, description=None):
+    """Update a Strava activity name and/or description."""
+    url = f"https://www.strava.com/api/v3/activities/{activity_id}"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    payload = {}
+    if name is not None:
+        payload["name"] = name
+    if description is not None:
+        payload["description"] = description
+    resp = requests.put(url, headers=headers, json=payload, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def build_workout_description(workout_id, conn):
+    """Build a text description of a Hevy workout for Strava."""
+    with conn.cursor() as cur:
+        # Get workout metadata
+        cur.execute("""
+            SELECT title,
+                   EXTRACT(EPOCH FROM (end_time - start_time)) / 60 AS duration_min
+            FROM hevy_workouts
+            WHERE workout_id = %s
+        """, (workout_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        title, duration_min = row
+
+        # Get exercises and sets
+        cur.execute("""
+            SELECT
+                hwe.title AS exercise,
+                hwe.exercise_index,
+                hws.set_index,
+                hws.weight_kg,
+                hws.reps,
+                hws.rpe,
+                hws.set_type,
+                hwe.notes
+            FROM hevy_workout_exercises hwe
+            JOIN hevy_workout_sets hws
+              ON hws.workout_id = hwe.workout_id
+             AND hws.exercise_index = hwe.exercise_index
+            WHERE hwe.workout_id = %s
+              AND hws.set_type = 'normal'
+            ORDER BY hwe.exercise_index, hws.set_index
+        """, (workout_id,))
+        sets = cur.fetchall()
+
+    if not sets:
+        return None
+
+    # Group sets by exercise
+    exercises = {}
+    notes_map = {}
+    for exercise, ex_idx, set_idx, weight_kg, reps, rpe, set_type, notes in sets:
+        if ex_idx not in exercises:
+            exercises[ex_idx] = {"name": exercise, "sets": []}
+            if notes:
+                notes_map[ex_idx] = notes
+        weight_lb = round(float(weight_kg) * 2.20462, 1) if weight_kg else None
+        exercises[ex_idx]["sets"].append((weight_lb, reps, rpe))
+
+    lines = [f"{title} | {round(duration_min)} min", ""]
+
+    for ex_idx in sorted(exercises.keys()):
+        ex = exercises[ex_idx]
+        lines.append(ex["name"])
+
+        # Summarize sets — group identical sets
+        set_summary = []
+        prev = None
+        count = 0
+        for weight_lb, reps, rpe in ex["sets"]:
+            key = (weight_lb, reps)
+            if key == prev:
+                count += 1
+            else:
+                if prev is not None:
+                    w, r = prev
+                    w_str = f"{w} lb" if w else "BW"
+                    set_summary.append(f"{count}×{r} @ {w_str}")
+                prev = key
+                count = 1
+        if prev:
+            w, r = prev
+            w_str = f"{w} lb" if w else "BW"
+            set_summary.append(f"{count}×{r} @ {w_str}")
+
+        lines.append("  " + " | ".join(set_summary))
+        if ex_idx in notes_map:
+            lines.append(f"  ✎ {notes_map[ex_idx]}")
+
+    return "\n".join(lines)
+
+
+def update_strength_descriptions(access_token, conn, lookback_days=3):
+    """
+    For each recent Hevy workout, find the matching Garmin WeightTraining
+    activity on Strava and update its name and description with Hevy set data.
+    Only updates activities with generic Garmin names.
+    """
+    print(f"\nUpdating Strava strength descriptions (last {lookback_days} days)...")
+
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT
+                hw.workout_id,
+                hw.title,
+                hw.start_time,
+                hw.end_time,
+                sa.strava_activity_id,
+                sa.name AS strava_name
+            FROM hevy_workouts hw
+            JOIN strava_activities sa
+              ON sa.sport_type = 'WeightTraining'
+             AND ABS(EXTRACT(EPOCH FROM (sa.activity_date - hw.start_time))) < 3600
+            WHERE hw.start_time >= NOW() - (%s * INTERVAL '1 day')
+              AND LOWER(sa.name) = ANY(%s)
+            ORDER BY hw.start_time DESC
+        """, (lookback_days, GARMIN_STRENGTH_NAMES))
+        matches = cur.fetchall()
+
+    if not matches:
+        print("  No Garmin strength activities to update.")
+        return
+
+    for workout_id, title, start_time, end_time, strava_id, strava_name in matches:
+        print(f"  Matching: Hevy '{title}' -> Strava '{strava_name}' ({strava_id})")
+
+        description = build_workout_description(workout_id, conn)
+        if not description:
+            print(f"  ⚠️ No set data for workout {workout_id}, skipping.")
+            continue
+
+        try:
+            update_strava_activity(
+                access_token,
+                strava_id,
+                name=title,
+                description=description,
+            )
+            print(f"  ✅ Updated Strava activity {strava_id} -> '{title}'")
+        except Exception as e:
+            print(f"  ⚠️ Failed to update {strava_id}: {e}")
 
 
 def upsert_activities(conn, activities):
@@ -87,28 +238,11 @@ def upsert_activities(conn, activities):
                 cur.execute(
                     """
                     INSERT INTO strava_activities (
-                        strava_activity_id,
-                        activity_date,
-                        name,
-                        sport_type,
-                        distance_m,
-                        moving_time_s,
-                        elapsed_time_s,
-                        total_elevation_gain_m,
-                        average_speed,
-                        max_speed,
-                        average_heartrate,
-                        max_heartrate,
-                        average_watts,
-                        weighted_average_watts,
-                        max_watts,
-                        kilojoules,
-                        trainer,
-                        commute,
-                        manual,
-                        private,
-                        raw_json,
-                        updated_at
+                        strava_activity_id, activity_date, name, sport_type,
+                        distance_m, moving_time_s, elapsed_time_s, total_elevation_gain_m,
+                        average_speed, max_speed, average_heartrate, max_heartrate,
+                        average_watts, weighted_average_watts, max_watts, kilojoules,
+                        trainer, commute, manual, private, raw_json, updated_at
                     )
                     VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
@@ -138,26 +272,12 @@ def upsert_activities(conn, activities):
                         updated_at = NOW();
                     """,
                     (
-                        a.get("id"),
-                        a.get("start_date"),
-                        a.get("name"),
-                        a.get("sport_type"),
-                        a.get("distance"),
-                        a.get("moving_time"),
-                        a.get("elapsed_time"),
-                        a.get("total_elevation_gain"),
-                        a.get("average_speed"),
-                        a.get("max_speed"),
-                        a.get("average_heartrate"),
-                        a.get("max_heartrate"),
-                        a.get("average_watts"),
-                        a.get("weighted_average_watts"),
-                        a.get("max_watts"),
-                        a.get("kilojoules"),
-                        a.get("trainer"),
-                        a.get("commute"),
-                        a.get("manual"),
-                        a.get("private"),
+                        a.get("id"), a.get("start_date"), a.get("name"), a.get("sport_type"),
+                        a.get("distance"), a.get("moving_time"), a.get("elapsed_time"),
+                        a.get("total_elevation_gain"), a.get("average_speed"), a.get("max_speed"),
+                        a.get("average_heartrate"), a.get("max_heartrate"), a.get("average_watts"),
+                        a.get("weighted_average_watts"), a.get("max_watts"), a.get("kilojoules"),
+                        a.get("trainer"), a.get("commute"), a.get("manual"), a.get("private"),
                         json.dumps(a),
                     ),
                 )
@@ -170,51 +290,22 @@ def upsert_activity_streams(conn, activity_id, streams):
 
     with conn:
         with conn.cursor() as cur:
-            cur.execute(
-                "delete from strava_activity_streams where strava_activity_id = %s",
-                (activity_id,),
-            )
-
+            cur.execute("delete from strava_activity_streams where strava_activity_id = %s", (activity_id,))
             inserted_count = 0
-
             for stream_type, stream_obj in streams.items():
                 if not isinstance(stream_obj, dict):
-                    print(
-                        f"⚠️ Unexpected stream object for {activity_id} / {stream_type}: "
-                        f"{type(stream_obj)}"
-                    )
                     continue
-
                 data = stream_obj.get("data", [])
                 if not isinstance(data, list):
-                    print(f"⚠️ Stream {stream_type} for {activity_id} has non-list data")
                     continue
-
                 print(f"  -> stream_type={stream_type}, points={len(data)}")
-
                 for idx, value in enumerate(data):
-                    value_numeric = None
-                    value_text = None
-                    value_json = None
-
-                    if isinstance(value, (int, float)) and not isinstance(value, bool):
-                        value_numeric = float(value)
-                    elif isinstance(value, str):
-                        value_text = value
-                    else:
-                        value_json = json.dumps(value)
-
-                    cur.execute(
-                        """
-                        insert into strava_activity_streams (
-                            strava_activity_id,
-                            stream_type,
-                            idx,
-                            value_numeric,
-                            value_text,
-                            value_json,
-                            updated_at
-                        )
+                    value_numeric = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+                    value_text = value if isinstance(value, str) else None
+                    value_json = json.dumps(value) if value_numeric is None and value_text is None else None
+                    cur.execute("""
+                        insert into strava_activity_streams
+                            (strava_activity_id, stream_type, idx, value_numeric, value_text, value_json, updated_at)
                         values (%s, %s, %s, %s, %s, %s::jsonb, now())
                         on conflict (strava_activity_id, stream_type, idx)
                         do update set
@@ -222,34 +313,21 @@ def upsert_activity_streams(conn, activity_id, streams):
                             value_text = excluded.value_text,
                             value_json = excluded.value_json,
                             updated_at = now();
-                        """,
-                        (
-                            activity_id,
-                            stream_type,
-                            idx,
-                            value_numeric,
-                            value_text,
-                            value_json,
-                        ),
-                    )
+                    """, (activity_id, stream_type, idx, value_numeric, value_text, value_json))
                     inserted_count += 1
-
             print(f"  -> inserted/updated {inserted_count} stream rows for activity {activity_id}")
 
 
 def parse_start_time(start_date_value):
     if not start_date_value:
         return None
-
     if isinstance(start_date_value, datetime.datetime):
         return start_date_value
-
     if isinstance(start_date_value, str):
         try:
             return datetime.datetime.fromisoformat(start_date_value.replace("Z", "+00:00"))
         except Exception:
             return None
-
     return None
 
 
@@ -260,21 +338,16 @@ def main():
 
         print("Refreshing Strava token...")
         new_tokens = refresh_access_token(tokens["refresh_token"])
-
-        save_tokens(
-            {
-                "access_token": new_tokens["access_token"],
-                "refresh_token": new_tokens["refresh_token"],
-                "expires_at": new_tokens["expires_at"],
-            }
-        )
-
+        save_tokens({
+            "access_token": new_tokens["access_token"],
+            "refresh_token": new_tokens["refresh_token"],
+            "expires_at": new_tokens["expires_at"],
+        })
         print("✅ Token refreshed and saved")
         access_token = new_tokens["access_token"]
 
         print("Fetching recent Strava activities...")
         activities = fetch_recent_activities(access_token)
-
         print(f"Fetched {len(activities)} activities")
 
         print("Recent activity sport types:")
@@ -283,32 +356,27 @@ def main():
 
         print("Connecting to Postgres...")
         conn = psycopg2.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
+            host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD,
         )
 
         ensure_power_tables(conn)
-
         upsert_activities(conn, activities)
+
+        # Update Strava strength activity names + descriptions from Hevy data
+        update_strength_descriptions(access_token, conn, lookback_days=3)
 
         ride_candidates = [
             a for a in activities
             if a.get("sport_type") in ("Ride", "VirtualRide", "EBikeRide")
         ]
-
         print(f"Fetching streams for {len(ride_candidates)} ride activities...")
 
         for a in ride_candidates:
             activity_id = a.get("id")
             if not activity_id:
                 continue
-
             try:
                 streams = fetch_activity_streams(access_token, activity_id)
-
                 print(f"Raw streams response for activity {activity_id}:")
                 try:
                     print(json.dumps(streams, indent=2)[:5000])
@@ -318,33 +386,13 @@ def main():
                 upsert_activity_streams(conn, activity_id, streams)
 
                 start_time = parse_start_time(a.get("start_date"))
-                normalized_rows = normalize_strava_streams(
-                    streams,
-                    activity_start_time=start_time,
-                )
+                normalized_rows = normalize_strava_streams(streams, activity_start_time=start_time)
 
                 if normalized_rows:
-                    row_count = upsert_activity_stream_rows(
-                        conn=conn,
-                        activity_id=activity_id,
-                        rows=normalized_rows,
-                        source="strava",
-                    )
-
+                    row_count = upsert_activity_stream_rows(conn=conn, activity_id=activity_id, rows=normalized_rows, source="strava")
                     power_values = [row.get("power_w") for row in normalized_rows]
-
-                    best_efforts = upsert_best_efforts(
-                        conn=conn,
-                        activity_id=activity_id,
-                        power_values=power_values,
-                        source="strava",
-                        windows=[5, 60, 300, 1200],
-                    )
-
-                    print(
-                        f"✅ Power sync complete for activity {activity_id} "
-                        f"(rows={row_count}, best_efforts={best_efforts})"
-                    )
+                    best_efforts = upsert_best_efforts(conn=conn, activity_id=activity_id, power_values=power_values, source="strava", windows=[5, 60, 300, 1200])
+                    print(f"✅ Power sync complete for activity {activity_id} (rows={row_count}, best_efforts={best_efforts})")
                 else:
                     print(f"⚠️ No normalized rows generated for activity {activity_id}")
 
