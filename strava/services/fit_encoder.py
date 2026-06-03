@@ -51,8 +51,6 @@ EXERCISE_CATEGORY = {
     "UNKNOWN": 65534,
 }
 
-# Exercise name enums within each category (from FIT SDK Profile)
-# Format: category_name -> {name_string: int_value}
 EXERCISE_NAMES = {
     "BENCH_PRESS": {
         "BARBELL_BENCH_PRESS": 0,
@@ -149,7 +147,6 @@ EXERCISE_NAMES = {
     },
 }
 
-# Hevy exercise name -> (category_key, name_key)
 HEVY_TO_FIT = {
     "Bench Press (Barbell)":               ("BENCH_PRESS",       "BARBELL_BENCH_PRESS"),
     "Incline Bench Press (Barbell)":       ("BENCH_PRESS",       "INCLINE_BARBELL_BENCH_PRESS"),
@@ -191,203 +188,217 @@ def get_exercise_enums(hevy_name):
     mapping = HEVY_TO_FIT.get(hevy_name)
     if not mapping:
         return EXERCISE_CATEGORY["UNKNOWN"], 65535
-
     cat_key, name_key = mapping
     cat_int = EXERCISE_CATEGORY.get(cat_key, EXERCISE_CATEGORY["UNKNOWN"])
     name_int = EXERCISE_NAMES.get(cat_key, {}).get(name_key, 65535)
     return cat_int, name_int
 
 
-class FitEncoder:
-    """
-    Minimal FIT file encoder for strength training activities with set messages.
-    Produces a valid FIT activity file that Strava can ingest with structured set data.
-    """
+def _compute_crc(data):
+    """Compute FIT CRC-16."""
+    crc_table = [
+        0x0000, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401,
+        0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400,
+    ]
+    crc = 0
+    for byte in data:
+        tmp = crc_table[crc & 0xF]
+        crc = (crc >> 4) & 0x0FFF
+        crc ^= tmp ^ crc_table[byte & 0xF]
+        tmp = crc_table[crc & 0xF]
+        crc = (crc >> 4) & 0x0FFF
+        crc ^= tmp ^ crc_table[(byte >> 4) & 0xF]
+    return crc
+
+
+class FitWriter:
+    """Low-level FIT binary writer."""
 
     def __init__(self):
-        self._data = io.BytesIO()
-        self._local_message_types = {}
-        self._next_local_type = 0
+        self._buf = io.BytesIO()
 
-    def _write_field_def(self, field_num, size, base_type):
-        return struct.pack("BBB", field_num, size, base_type)
+    def write_definition(self, local_num, global_num, fields):
+        """
+        Write a definition message.
+        fields: list of (field_num, size, base_type)
+        """
+        header = 0x40 | (local_num & 0x0F)
+        self._buf.write(bytes([header, 0, 0]))           # header, reserved, arch=LE
+        self._buf.write(struct.pack("<H", global_num))   # global msg num LE
+        self._buf.write(struct.pack("B", len(fields)))   # num fields
+        for fnum, fsize, ftype in fields:
+            self._buf.write(struct.pack("BBB", fnum, fsize, ftype))
 
-    def _write_definition_message(self, local_type, global_msg_num, fields):
-        """Write a definition message."""
-        # Header: definition message, local type
-        header = 0x40 | local_type
-        # Architecture: 0 = little endian
-        arch = 0
-        num_fields = len(fields)
-        buf = struct.pack(">BBBBHB", header, 0, arch, 0, global_msg_num, num_fields)
-        # Swap to little endian for global_msg_num
-        buf = bytes([header, 0, 0]) + struct.pack("<H", global_msg_num) + struct.pack("B", num_fields)
-        for field_num, size, base_type in fields:
-            buf += struct.pack("BBB", field_num, size, base_type)
-        self._data.write(buf)
-        self._local_message_types[global_msg_num] = local_type
+    def write_data(self, local_num, *values_and_fmts):
+        """
+        Write a data message.
+        values_and_fmts: alternating (value, fmt) pairs
+        e.g. write_data(0, 4, "<B", 255, "<H")
+        """
+        header = local_num & 0x0F
+        self._buf.write(bytes([header]))
+        it = iter(values_and_fmts)
+        for value in it:
+            fmt = next(it)
+            self._buf.write(struct.pack(fmt, value))
 
-    def _write_data_message(self, local_type, values):
-        """Write a data message."""
-        header = local_type & 0x0F
-        self._data.write(bytes([header]))
-        for value, fmt in values:
-            self._data.write(struct.pack(fmt, value))
+    def getvalue(self):
+        return self._buf.getvalue()
 
-    def _compute_crc(self, data):
-        """Compute FIT CRC."""
-        crc_table = [
-            0x0000, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401,
-            0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400,
-        ]
-        crc = 0
-        for byte in data:
-            tmp = crc_table[crc & 0xF]
-            crc = (crc >> 4) & 0x0FFF
-            crc ^= tmp ^ crc_table[byte & 0xF]
-            tmp = crc_table[crc & 0xF]
-            crc = (crc >> 4) & 0x0FFF
-            crc ^= tmp ^ crc_table[(byte >> 4) & 0xF]
-        return crc
+
+class FitEncoder:
+    """
+    Encodes strength training workouts into FIT activity files for Strava upload.
+
+    Message order required by Strava:
+      file_id → event(start) → record(start) → [sets] → record(end) → event(stop) → lap → session → activity
+    """
 
     def encode(self, workout_data):
-        """
-        Encode a workout dict into FIT bytes.
-
-        workout_data = {
-            'title': str,
-            'start_time': datetime,
-            'end_time': datetime,
-            'exercises': [
-                {
-                    'name': str,  # Hevy exercise name
-                    'sets': [
-                        {'weight_kg': float, 'reps': int, 'set_type': str}
-                    ]
-                }
-            ]
-        }
-        """
-        self._data = io.BytesIO()
-
         start_time = workout_data['start_time']
         end_time = workout_data['end_time']
+
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=datetime.timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=datetime.timezone.utc)
+
         total_elapsed = int((end_time - start_time).total_seconds())
         fit_start = to_fit_timestamp(start_time)
-
-        # --- FILE ID message (global msg 0) ---
-        # Fields: type(0/1byte), manufacturer(1/2byte), product(2/2byte), time_created(4/4byte)
-        self._write_definition_message(0, 0, [
-            (0, 1, 0),    # type: ENUM (base_type 0)
-            (1, 2, 132),  # manufacturer: UINT16
-            (2, 2, 132),  # product: UINT16
-            (4, 4, 134),  # time_created: UINT32
-        ])
-        self._write_data_message(0, [
-            (4, "<B"),      # type = activity (4)
-            (255, "<H"),    # manufacturer = development (255)
-            (1, "<H"),      # product = 1
-            (fit_start, "<I"),  # time_created
-        ])
-
-        # --- ACTIVITY message (global msg 34) ---
-        # Fields: timestamp(253/4byte), total_timer_time(0/4byte), num_sessions(1/2byte), type(2/1byte), event(3/1byte), event_type(4/1byte)
-        self._write_definition_message(1, 34, [
-            (253, 4, 134),  # timestamp: UINT32
-            (0, 4, 134),    # total_timer_time: UINT32 (scaled *1000)
-            (1, 2, 132),    # num_sessions: UINT16
-            (2, 1, 0),      # type: ENUM
-            (3, 1, 0),      # event: ENUM
-            (4, 1, 0),      # event_type: ENUM
-        ])
         fit_end = to_fit_timestamp(end_time)
-        self._write_data_message(1, [
-            (fit_end, "<I"),
-            (total_elapsed * 1000, "<I"),
-            (1, "<H"),
-            (0, "<B"),  # type = manual (0)
-            (26, "<B"), # event = session (26)
-            (1, "<B"),  # event_type = stop (1)
+
+        w = FitWriter()
+
+        # ── 0: FILE_ID (global 0) ──────────────────────────────────────────
+        # field: type(0,1,0), manufacturer(1,2,132), product(2,2,132), time_created(4,4,134)
+        w.write_definition(0, 0, [(0,1,0),(1,2,132),(2,2,132),(4,4,134)])
+        w.write_data(0,
+            4,         "<B",   # type = activity
+            255,       "<H",   # manufacturer = development
+            1,         "<H",   # product
+            fit_start, "<I",   # time_created
+        )
+
+        # ── 1: EVENT start (global 21) ─────────────────────────────────────
+        # fields: timestamp(253,4,134), event(0,1,0), event_type(1,1,0), event_group(4,1,2)
+        w.write_definition(1, 21, [(253,4,134),(0,1,0),(1,1,0),(4,1,2)])
+        w.write_data(1,
+            fit_start, "<I",  # timestamp
+            0,         "<B",  # event = timer (0)
+            0,         "<B",  # event_type = start (0)
+            0,         "<B",  # event_group
+        )
+
+        # ── 2: RECORD start (global 20) ───────────────────────────────────
+        # Strava requires at least one record message with a timestamp
+        # fields: timestamp(253,4,134)
+        w.write_definition(2, 20, [(253,4,134)])
+        w.write_data(2, fit_start, "<I")
+
+        # ── 3: SET messages (global 225) ───────────────────────────────────
+        # fields: timestamp(253,4,134), duration(0,4,134), repetitions(3,2,132),
+        #         weight(4,2,132), set_type(5,1,0), category(6,2,132), category_subtype(7,2,132)
+        w.write_definition(3, 225, [
+            (253,4,134),(0,4,134),(3,2,132),(4,2,132),(5,1,0),(6,2,132),(7,2,132)
         ])
 
-        # --- SESSION message (global msg 18) ---
-        self._write_definition_message(2, 18, [
-            (253, 4, 134),  # timestamp: UINT32
-            (2, 4, 134),    # start_time: UINT32
-            (7, 4, 134),    # total_elapsed_time: UINT32 (*1000)
-            (8, 4, 134),    # total_timer_time: UINT32 (*1000)
-            (0, 1, 0),      # event: ENUM
-            (1, 1, 0),      # event_type: ENUM
-            (5, 1, 0),      # sport: ENUM (strength_training = 4)
-            (6, 1, 0),      # sub_sport: ENUM (strength_training = 23)
-        ])
-        self._write_data_message(2, [
-            (fit_end, "<I"),
-            (fit_start, "<I"),
-            (total_elapsed * 1000, "<I"),
-            (total_elapsed * 1000, "<I"),
-            (26, "<B"),  # event = session
-            (1, "<B"),   # event_type = stop
-            (4, "<B"),   # sport = strength_training
-            (23, "<B"),  # sub_sport = strength_training
-        ])
-
-        # --- SET messages (global msg 225) ---
-        # Fields: timestamp(253/4), duration(0/4 *1000), repetitions(3/2), weight(4/2 *100 kg), set_type(5/1), category(6/2), category_subtype(7/2)
-        self._write_definition_message(3, 225, [
-            (253, 4, 134),  # timestamp: UINT32
-            (0, 4, 134),    # duration: UINT32 (*1000)
-            (3, 2, 132),    # repetitions: UINT16
-            (4, 2, 132),    # weight: UINT16 (*100 kg)
-            (5, 1, 0),      # set_type: ENUM (0=active, 1=rest)
-            (6, 2, 132),    # category: UINT16
-            (7, 2, 132),    # category_subtype: UINT16
-        ])
-
-        # Distribute sets across the workout timespan
         total_sets = sum(len(ex['sets']) for ex in workout_data['exercises'])
         set_duration = max(30, total_elapsed // max(total_sets, 1))
         current_time = fit_start
 
         for exercise in workout_data['exercises']:
-            ex_name = exercise['name']
-            cat_int, name_int = get_exercise_enums(ex_name)
-
+            cat_int, name_int = get_exercise_enums(exercise['name'])
             for s in exercise['sets']:
                 current_time += set_duration
-                weight_kg = s.get('weight_kg') or 0
-                weight_raw = int(float(weight_kg) * 100)
+                weight_raw = int(float(s.get('weight_kg') or 0) * 100)
                 reps = s.get('reps') or 0
-                set_type = 0  # active
+                w.write_data(3,
+                    current_time,       "<I",
+                    set_duration*1000,  "<I",
+                    reps,               "<H",
+                    weight_raw,         "<H",
+                    0,                  "<B",  # set_type = active
+                    cat_int,            "<H",
+                    name_int,           "<H",
+                )
 
-                self._write_data_message(3, [
-                    (current_time, "<I"),
-                    (set_duration * 1000, "<I"),
-                    (reps, "<H"),
-                    (weight_raw, "<H"),
-                    (set_type, "<B"),
-                    (cat_int, "<H"),
-                    (name_int, "<H"),
-                ])
+        # ── 2: RECORD end (reuse local 2) ──────────────────────────────────
+        w.write_data(2, fit_end, "<I")
 
-        # Get encoded data bytes
-        data_bytes = self._data.getvalue()
+        # ── 1: EVENT stop (reuse local 1) ──────────────────────────────────
+        w.write_data(1,
+            fit_end, "<I",  # timestamp
+            0,       "<B",  # event = timer
+            4,       "<B",  # event_type = stop_all (4)
+            0,       "<B",  # event_group
+        )
 
-        # Build header
-        data_size = len(data_bytes)
-        header_size = 14
+        # ── 4: LAP (global 19) ─────────────────────────────────────────────
+        # fields: timestamp(253,4,134), start_time(2,4,134), total_elapsed_time(7,4,134),
+        #         total_timer_time(8,4,134), event(0,1,0), event_type(1,1,0),
+        #         sport(25,1,0), sub_sport(26,1,0)
+        w.write_definition(4, 19, [
+            (253,4,134),(2,4,134),(7,4,134),(8,4,134),(0,1,0),(1,1,0),(25,1,0),(26,1,0)
+        ])
+        w.write_data(4,
+            fit_end,             "<I",
+            fit_start,           "<I",
+            total_elapsed*1000,  "<I",
+            total_elapsed*1000,  "<I",
+            9,  "<B",  # event = lap (9)
+            1,  "<B",  # event_type = stop (1)
+            4,  "<B",  # sport = strength_training (4)
+            23, "<B",  # sub_sport = strength_training (23)
+        )
+
+        # ── 5: SESSION (global 18) ─────────────────────────────────────────
+        # fields: timestamp(253,4,134), start_time(2,4,134),
+        #         total_elapsed_time(7,4,134), total_timer_time(8,4,134),
+        #         num_laps(9,2,132), event(0,1,0), event_type(1,1,0),
+        #         sport(5,1,0), sub_sport(6,1,0)
+        w.write_definition(5, 18, [
+            (253,4,134),(2,4,134),(7,4,134),(8,4,134),
+            (9,2,132),(0,1,0),(1,1,0),(5,1,0),(6,1,0)
+        ])
+        w.write_data(5,
+            fit_end,             "<I",
+            fit_start,           "<I",
+            total_elapsed*1000,  "<I",
+            total_elapsed*1000,  "<I",
+            1,  "<H",  # num_laps
+            8,  "<B",  # event = session (8)
+            1,  "<B",  # event_type = stop (1)
+            4,  "<B",  # sport = strength_training (4)
+            23, "<B",  # sub_sport = strength_training (23)
+        )
+
+        # ── 6: ACTIVITY (global 34) ────────────────────────────────────────
+        # fields: timestamp(253,4,134), total_timer_time(0,4,134),
+        #         num_sessions(1,2,132), type(2,1,0), event(3,1,0), event_type(4,1,0)
+        w.write_definition(6, 34, [
+            (253,4,134),(0,4,134),(1,2,132),(2,1,0),(3,1,0),(4,1,0)
+        ])
+        w.write_data(6,
+            fit_end,             "<I",
+            total_elapsed*1000,  "<I",
+            1,  "<H",  # num_sessions
+            0,  "<B",  # type = manual (0)
+            26, "<B",  # event = activity (26)
+            1,  "<B",  # event_type = stop (1)
+        )
+
+        data_bytes = w.getvalue()
+
+        # ── FIT file header (14 bytes) ─────────────────────────────────────
         header = struct.pack("<BBHI4s",
-            header_size,  # header size
-            0x10,         # protocol version
-            0x07D9,       # profile version (21.17)
-            data_size,
+            14,      # header size
+            0x10,    # protocol version 1.0
+            0x07D9,  # profile version 21.17
+            len(data_bytes),
             b'.FIT',
         )
-        header_crc = self._compute_crc(header)
+        header_crc = _compute_crc(header)
         header += struct.pack("<H", header_crc)
 
-        # Data CRC
-        data_crc = self._compute_crc(data_bytes)
-        data_crc_bytes = struct.pack("<H", data_crc)
-
-        return header + data_bytes + data_crc_bytes
+        data_crc = _compute_crc(data_bytes)
+        return header + data_bytes + struct.pack("<H", data_crc)
