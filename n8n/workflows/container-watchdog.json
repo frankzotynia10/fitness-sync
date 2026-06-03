@@ -1,0 +1,6 @@
+{
+  "id": "6Pg6fS7YDOJSfFub",
+  "name": "Container Watchdog",
+  "description": "Hourly watchdog for 9 containers: garmin-sync, hevy-sync, strava-sync, claude-mcp, hevy2garmin, supabase-db, supabase-rest, supabase-meta, supabase-studio. Restarts any that are down, waits 30s, rechecks, alerts via ntfy only if still down.",
+  "containers_monitored": ["garmin-sync", "hevy-sync", "strava-sync", "claude-mcp", "hevy2garmin", "supabase-db", "supabase-rest", "supabase-meta", "supabase-studio"]
+}

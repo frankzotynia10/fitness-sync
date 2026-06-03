@@ -1,0 +1,21 @@
+{
+  "id": "zElKoRhuhpF7MAeX",
+  "name": "iOS Shortcuts Fitness Sync Trigger",
+  "description": "Webhook POST to /webhook/fitness-sync. Two parallel branches: (1) Respond OK immediately, (2) Garmin -> Hevy -> hevy2garmin -> Strava FIT Replace -> strava-sync.",
+  "connections": {
+    "Sync Trigger": ["Respond OK", "Restart Garmin Sync"],
+    "Restart Garmin Sync": ["Restart Hevy Sync"],
+    "Restart Hevy Sync": ["Restart hevy2garmin"],
+    "Restart hevy2garmin": ["Run Strava FIT Replace iOS"],
+    "Run Strava FIT Replace iOS": ["Restart Strava Sync"]
+  },
+  "nodes": [
+    { "name": "Sync Trigger", "type": "n8n-nodes-base.webhook", "path": "/webhook/fitness-sync", "method": "POST" },
+    { "name": "Respond OK", "type": "n8n-nodes-base.respondToWebhook" },
+    { "name": "Restart Garmin Sync", "type": "n8n-nodes-base.ssh", "command": "docker exec garmin-sync python garmin_sync.py" },
+    { "name": "Restart Hevy Sync", "type": "n8n-nodes-base.ssh", "command": "docker exec hevy-sync python hevy_sync.py" },
+    { "name": "Restart Strava Sync", "type": "n8n-nodes-base.ssh", "command": "docker exec strava-sync python strava_sync.py" },
+    { "name": "Restart hevy2garmin", "type": "n8n-nodes-base.ssh", "command": "docker exec hevy2garmin hevy2garmin sync" },
+    { "name": "Run Strava FIT Replace iOS", "type": "n8n-nodes-base.ssh", "command": "docker exec strava-sync python strava_replace_activity.py" }
+  ]
+}

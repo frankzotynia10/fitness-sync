@@ -1,0 +1,5 @@
+{
+  "id": "Xcz6WaDpiqfJzFlt",
+  "name": "Fitness Stack Deploy",
+  "description": "Triggered by GitHub Actions on push to main. SSHes into Andromeda and runs docker compose pull and up for fitness-sync and claude-mcp stacks, then runs a full sync in order."
+}
