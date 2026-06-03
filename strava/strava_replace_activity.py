@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """
-Download enhanced FIT from Garmin Connect and upload to Strava.
-Does NOT delete the original — verify the new activity first, then delete manually.
+Auto-sync Garmin activities to Strava via FIT upload.
+Runs hourly — queries Garmin for recent activities, checks DB for what's
+already on Strava, and uploads FIT files for anything missing.
 
-Usage:
-  python strava_replace_activity.py --garmin-id 579527833714 --strava-id 18755208377
-
-Once verified:
-  python strava_replace_activity.py --garmin-id 579527833714 --strava-id 18755208377 --delete-original
+Can also be run manually with explicit IDs:
+  python strava_replace_activity.py --garmin-id 23119214174
 """
 
 import os
@@ -17,17 +15,49 @@ import io
 import time
 import json
 import argparse
+import datetime
 import requests
+import psycopg2
 from dotenv import load_dotenv
 from garminconnect import Garmin
 
-# ── Env ───────────────────────────────────────────────────────────────────────
+# ── Env ──────────────────────────────────────────────────────────────────────
 load_dotenv()
 
 GARMIN_TOKEN_DIR     = os.getenv("GARMINTOKENS", "/root/.garminconnect")
 STRAVA_CLIENT_ID     = os.environ["STRAVA_CLIENT_ID"]
 STRAVA_CLIENT_SECRET = os.environ["STRAVA_CLIENT_SECRET"]
 STRAVA_TOKENS_FILE   = os.environ["STRAVA_TOKENS_FILE"]
+DB_HOST              = os.environ["DB_HOST"]
+DB_PORT              = os.environ.get("DB_PORT", "5432")
+DB_NAME              = os.environ.get("DB_NAME", "postgres")
+DB_USER              = os.environ.get("DB_USER", "postgres")
+DB_PASSWORD          = os.environ["DB_PASSWORD"]
+LOOKBACK_DAYS        = int(os.environ.get("STRAVA_LOOKBACK_DAYS", "3"))
+
+# Garmin activity type -> Strava sport_type
+ACTIVITY_TYPE_MAP = {
+    "strength_training": "WeightTraining",
+    "road_biking":       "Ride",
+    "indoor_cycling":    "VirtualRide",
+    "cycling":           "Ride",
+    "walking":           "Walk",
+    "running":           "Run",
+    "trail_running":     "TrailRun",
+    "hiking":            "Hike",
+    "swimming":          "Swim",
+    "open_water_swimming": "Swim",
+}
+
+# Sport types where trainer=1 should be set
+TRAINER_TYPES = {"WeightTraining", "VirtualRide"}
+
+
+# ── Garmin client ───────────────────────────────────────────────────────────
+def get_garmin_client():
+    client = Garmin()
+    client.login(tokenstore=GARMIN_TOKEN_DIR)
+    return client
 
 
 # ── Strava token helpers ──────────────────────────────────────────────────────
@@ -65,83 +95,65 @@ def get_access_token():
     return new["access_token"]
 
 
-# ── Step 1: Download FIT from Garmin ──────────────────────────────────────────
-def download_fit(garmin_activity_id):
-    print(f"\n[1/3] Downloading FIT for Garmin activity {garmin_activity_id}...")
-    print(f"      Token dir: {GARMIN_TOKEN_DIR}")
+# ── DB helpers ───────────────────────────────────────────────────────────────
+def get_db_conn():
+    return psycopg2.connect(
+        host=DB_HOST, port=DB_PORT, dbname=DB_NAME,
+        user=DB_USER, password=DB_PASSWORD
+    )
 
-    try:
-        client = Garmin()
-        client.login(tokenstore=GARMIN_TOKEN_DIR)
-        print(f"      Authenticated as: {client.get_full_name()}")
-    except Exception as e:
-        print(f"      ERROR authenticating with Garmin: {e}")
-        sys.exit(1)
 
-    try:
-        zip_bytes = client.download_activity(
-            garmin_activity_id,
-            dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL
+def get_existing_strava_dates(conn, since_date):
+    """Return set of (date_str, sport_type) tuples already in strava_activities."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DATE(activity_date AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York'),
+                   sport_type
+            FROM strava_activities
+            WHERE activity_date >= %s
+            """,
+            (since_date,)
         )
-        print(f"      Downloaded {len(zip_bytes)} bytes")
-    except Exception as e:
-        print(f"      ERROR downloading FIT: {e}")
-        sys.exit(1)
+        return {(str(row[0]), row[1]) for row in cur.fetchall()}
 
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-            fit_names = [n for n in z.namelist() if n.endswith(".fit")]
-            if not fit_names:
-                print(f"      ERROR: No .fit in zip. Contents: {z.namelist()}")
-                sys.exit(1)
-            fit_filename = fit_names[0]
-            fit_data = z.read(fit_filename)
-        print(f"      Extracted: {fit_filename} ({len(fit_data)} bytes)")
-    except Exception as e:
-        print(f"      ERROR extracting FIT: {e}")
-        sys.exit(1)
 
-    local_path = f"/tmp/{fit_filename}"
-    with open(local_path, "wb") as f:
-        f.write(fit_data)
-    print(f"      Saved to: {local_path}")
-
+# ── Download FIT ───────────────────────────────────────────────────────────────
+def download_fit(client, garmin_activity_id):
+    zip_bytes = client.download_activity(
+        garmin_activity_id,
+        dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL
+    )
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+        fit_names = [n for n in z.namelist() if n.endswith(".fit")]
+        if not fit_names:
+            raise RuntimeError(f"No .fit in zip. Contents: {z.namelist()}")
+        fit_filename = fit_names[0]
+        fit_data = z.read(fit_filename)
     return fit_filename, fit_data
 
 
-# ── Step 2: Upload FIT to Strava ──────────────────────────────────────────────
-def upload_fit(fit_filename, fit_data, access_token):
-    print(f"\n[2/3] Uploading FIT to Strava...")
-
+# ── Upload FIT to Strava ───────────────────────────────────────────────────────
+def upload_fit(fit_filename, fit_data, activity_name, sport_type, access_token):
+    is_trainer = "1" if sport_type in TRAINER_TYPES else "0"
     resp = requests.post(
         "https://www.strava.com/api/v3/uploads",
         headers={"Authorization": f"Bearer {access_token}"},
         data={
             "data_type":  "fit",
-            "name":       "Legs1",
-            "sport_type": "WeightTraining",
-            "trainer":    "1",
+            "name":       activity_name,
+            "sport_type": sport_type,
+            "trainer":    is_trainer,
         },
-        files={
-            "file": (fit_filename, fit_data, "application/octet-stream"),
-        },
+        files={"file": (fit_filename, fit_data, "application/octet-stream")},
         timeout=30,
     )
-
     if resp.status_code not in (200, 201):
-        print(f"      ERROR: Upload failed [{resp.status_code}]: {resp.text}")
-        sys.exit(1)
-
-    data = resp.json()
-    upload_id = data.get("id")
-    print(f"      Upload accepted. Upload ID: {upload_id} | Status: {data.get('status')}")
-    return upload_id
+        raise RuntimeError(f"Upload failed [{resp.status_code}]: {resp.text}")
+    return resp.json().get("id")
 
 
-# ── Step 3: Poll for completion ───────────────────────────────────────────────
 def poll_upload(upload_id, access_token):
-    print(f"\n[3/3] Polling upload status (up to 60s)...")
-
     for attempt in range(12):
         time.sleep(5)
         poll = requests.get(
@@ -150,61 +162,127 @@ def poll_upload(upload_id, access_token):
             timeout=30,
         )
         data            = poll.json()
-        status          = data.get("status")
         error           = data.get("error")
         new_activity_id = data.get("activity_id")
 
-        print(f"      [{attempt+1}] status={status} | error={error} | activity_id={new_activity_id}")
-
         if error:
-            print(f"\n❌  Upload failed: {error}")
-            sys.exit(1)
-
+            raise RuntimeError(f"Upload error: {error}")
         if new_activity_id:
             return new_activity_id
 
-    print("\n⚠️  Timed out waiting for upload. Check Strava manually.")
-    sys.exit(1)
+    raise RuntimeError("Timed out waiting for Strava upload")
 
 
-# ── Step 4: Delete original (optional) ───────────────────────────────────────
-def delete_activity(strava_activity_id, access_token):
-    print(f"\nDeleting original Strava activity {strava_activity_id}...")
-    resp = requests.delete(
-        f"https://www.strava.com/api/v3/activities/{strava_activity_id}",
-        headers={"Authorization": f"Bearer {access_token}"},
-        timeout=30,
-    )
-    if resp.status_code == 204:
-        print(f"  ✅ Deleted activity {strava_activity_id}")
-    else:
-        print(f"  ERROR: Delete failed [{resp.status_code}]: {resp.text}")
+# ── Auto mode: find and upload missing activities ─────────────────────────────
+def run_auto(lookback_days):
+    today     = datetime.date.today()
+    since     = today - datetime.timedelta(days=lookback_days)
+    since_str = since.isoformat()
+
+    print(f"Auto mode: checking last {lookback_days} days ({since_str} to {today})")
+
+    print("Connecting to Garmin...")
+    garmin = get_garmin_client()
+    print(f"  Authenticated as: {garmin.get_full_name()}")
+
+    print("Fetching Garmin activities...")
+    garmin_activities = garmin.get_activities_by_date(since_str, today.isoformat())
+    print(f"  Found {len(garmin_activities)} Garmin activities")
+
+    print("Checking DB for existing Strava activities...")
+    conn = get_db_conn()
+    existing = get_existing_strava_dates(conn, since_str)
+    conn.close()
+    print(f"  Found {len(existing)} existing Strava entries in window")
+
+    access_token = get_access_token()
+
+    uploaded = 0
+    skipped  = 0
+    errors   = 0
+
+    for a in garmin_activities:
+        activity_id   = a.get("activityId")
+        activity_name = a.get("activityName", "Activity")
+        type_key      = a.get("activityType", {}).get("typeKey", "")
+        start_local   = a.get("startTimeLocal", "")  # "2026-06-02 07:38:02"
+        activity_date = start_local[:10] if start_local else None
+
+        sport_type = ACTIVITY_TYPE_MAP.get(type_key)
+
+        if not sport_type:
+            print(f"  SKIP {activity_name} ({type_key}) — unmapped type")
+            skipped += 1
+            continue
+
+        if (activity_date, sport_type) in existing:
+            print(f"  SKIP {activity_name} on {activity_date} — already on Strava")
+            skipped += 1
+            continue
+
+        print(f"  UPLOAD {activity_name} | {activity_date} | {sport_type} | Garmin ID {activity_id}")
+        try:
+            fit_filename, fit_data = download_fit(garmin, activity_id)
+            upload_id              = upload_fit(fit_filename, fit_data, activity_name, sport_type, access_token)
+            new_id                 = poll_upload(upload_id, access_token)
+            print(f"    ✅ https://www.strava.com/activities/{new_id}")
+            uploaded += 1
+            time.sleep(2)  # be nice to the API
+        except Exception as e:
+            print(f"    ❌ Failed: {e}")
+            errors += 1
+
+    print(f"\nDone. uploaded={uploaded} skipped={skipped} errors={errors}")
+    if errors:
         sys.exit(1)
+
+
+# ── Manual mode: explicit Garmin ID ───────────────────────────────────────────
+def run_manual(garmin_id, sport_type_override, name_override):
+    print(f"Manual mode: Garmin activity {garmin_id}")
+
+    print("Connecting to Garmin...")
+    garmin = get_garmin_client()
+    print(f"  Authenticated as: {garmin.get_full_name()}")
+
+    # Fetch activity details to get name and type
+    activities = garmin.get_activity(garmin_id)
+    activity_name = name_override or activities.get("activityName", "Activity")
+    type_key      = activities.get("activityTypeDTO", {}).get("typeKey", "")
+    sport_type    = sport_type_override or ACTIVITY_TYPE_MAP.get(type_key)
+
+    if not sport_type:
+        print(f"  ERROR: Unknown activity type '{type_key}'. Use --sport-type to override.")
+        sys.exit(1)
+
+    print(f"  Activity: {activity_name} | type: {type_key} -> {sport_type}")
+
+    access_token = get_access_token()
+
+    print(f"Downloading FIT...")
+    fit_filename, fit_data = download_fit(garmin, garmin_id)
+    print(f"  {fit_filename} ({len(fit_data)} bytes)")
+
+    print(f"Uploading to Strava...")
+    upload_id = upload_fit(fit_filename, fit_data, activity_name, sport_type, access_token)
+    new_id    = poll_upload(upload_id, access_token)
+
+    print(f"\n✅  https://www.strava.com/activities/{new_id}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Replace Strava activity with enhanced Garmin FIT")
-    parser.add_argument("--garmin-id",       required=True, type=int, help="Garmin activity ID")
-    parser.add_argument("--strava-id",       required=True, type=int, help="Strava activity ID to replace")
-    parser.add_argument("--delete-original", action="store_true",     help="Delete original Strava activity after upload")
+    parser = argparse.ArgumentParser(description="Sync Garmin activities to Strava via FIT upload")
+    parser.add_argument("--garmin-id",   type=int, help="Manual mode: specific Garmin activity ID")
+    parser.add_argument("--sport-type",  type=str, help="Manual mode: override Strava sport type")
+    parser.add_argument("--name",        type=str, help="Manual mode: override activity name")
+    parser.add_argument("--lookback",    type=int, default=LOOKBACK_DAYS, help="Auto mode: days to look back (default: 3)")
     args = parser.parse_args()
 
-    access_token = get_access_token()
-
-    fit_filename, fit_data = download_fit(args.garmin_id)
-    upload_id              = upload_fit(fit_filename, fit_data, access_token)
-    new_activity_id        = poll_upload(upload_id, access_token)
-
-    print(f"\n✅  Upload complete!")
-    print(f"    New Strava activity ID : {new_activity_id}")
-    print(f"    View at               : https://www.strava.com/activities/{new_activity_id}")
-
-    if args.delete_original:
-        delete_activity(args.strava_id, access_token)
+    if args.garmin_id:
+        run_manual(args.garmin_id, args.sport_type, args.name)
     else:
-        print(f"\n    Original ({args.strava_id}) untouched.")
-        print(f"    Re-run with --delete-original once you've verified the new activity looks right.")
+        run_auto(args.lookback)
 
 
 if __name__ == "__main__":
