@@ -19,17 +19,18 @@ import json
 import argparse
 import requests
 from dotenv import load_dotenv
+from garminconnect import Garmin
 
 # ── Env ───────────────────────────────────────────────────────────────────────
 load_dotenv()
 
-GARTH_HOME           = os.getenv("GARMINTOKENS", "/root/.garminconnect")
+GARMIN_TOKEN_DIR     = os.getenv("GARMINTOKENS", "/root/.garminconnect")
 STRAVA_CLIENT_ID     = os.environ["STRAVA_CLIENT_ID"]
 STRAVA_CLIENT_SECRET = os.environ["STRAVA_CLIENT_SECRET"]
 STRAVA_TOKENS_FILE   = os.environ["STRAVA_TOKENS_FILE"]
 
 
-# ── Strava token helpers (shared pattern with strava_sync.py) ─────────────────
+# ── Strava token helpers ──────────────────────────────────────────────────────
 def load_tokens():
     with open(STRAVA_TOKENS_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -64,22 +65,23 @@ def get_access_token():
     return new["access_token"]
 
 
-# ── Step 1: Download FIT from Garmin ─────────────────────────────────────────
+# ── Step 1: Download FIT from Garmin ──────────────────────────────────────────
 def download_fit(garmin_activity_id):
     print(f"\n[1/3] Downloading FIT for Garmin activity {garmin_activity_id}...")
-    print(f"      Token dir: {GARTH_HOME}")
+    print(f"      Token dir: {GARMIN_TOKEN_DIR}")
 
     try:
-        import garth
-        garth.resume(GARTH_HOME)
-        print(f"      Authenticated as: {garth.client.username}")
+        client = Garmin()
+        client.login(tokenstore=GARMIN_TOKEN_DIR)
+        print(f"      Authenticated as: {client.get_full_name()}")
     except Exception as e:
-        print(f"      ERROR loading garth session: {e}")
+        print(f"      ERROR authenticating with Garmin: {e}")
         sys.exit(1)
 
     try:
-        zip_bytes = garth.client.download(
-            f"/download-service/files/activity/{garmin_activity_id}"
+        zip_bytes = client.download_activity(
+            garmin_activity_id,
+            dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL
         )
         print(f"      Downloaded {len(zip_bytes)} bytes")
     except Exception as e:
@@ -155,13 +157,13 @@ def poll_upload(upload_id, access_token):
         print(f"      [{attempt+1}] status={status} | error={error} | activity_id={new_activity_id}")
 
         if error:
-            print(f"\n\u274c  Upload failed: {error}")
+            print(f"\n❌  Upload failed: {error}")
             sys.exit(1)
 
         if new_activity_id:
             return new_activity_id
 
-    print("\n\u26a0\ufe0f  Timed out waiting for upload. Check Strava manually.")
+    print("\n⚠️  Timed out waiting for upload. Check Strava manually.")
     sys.exit(1)
 
 
@@ -174,7 +176,7 @@ def delete_activity(strava_activity_id, access_token):
         timeout=30,
     )
     if resp.status_code == 204:
-        print(f"  \u2705 Deleted activity {strava_activity_id}")
+        print(f"  ✅ Deleted activity {strava_activity_id}")
     else:
         print(f"  ERROR: Delete failed [{resp.status_code}]: {resp.text}")
         sys.exit(1)
@@ -194,7 +196,7 @@ def main():
     upload_id              = upload_fit(fit_filename, fit_data, access_token)
     new_activity_id        = poll_upload(upload_id, access_token)
 
-    print(f"\n\u2705  Upload complete!")
+    print(f"\n✅  Upload complete!")
     print(f"    New Strava activity ID : {new_activity_id}")
     print(f"    View at               : https://www.strava.com/activities/{new_activity_id}")
 
