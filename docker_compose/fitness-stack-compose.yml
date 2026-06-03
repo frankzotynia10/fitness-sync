@@ -33,8 +33,7 @@ services:
     restart: unless-stopped
     env_file:
       - /mnt/user/appdata/fitness-sync/garmin/.env
-    environment:
-      - HEVY_API_KEY=${HEVY_API_KEY}
+      - /mnt/user/appdata/fitness-sync/hevy/.env
     volumes:
       - /mnt/user/appdata/fitness-sync/garmin/tokens:/root/.garminconnect
       - /mnt/user/appdata/fitness-sync/hevy2garmin:/root/.hevy2garmin
