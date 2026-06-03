@@ -26,3 +26,16 @@ services:
     env_file:
       - /mnt/user/appdata/fitness-sync/hevy/.env
     command: tail -f /dev/null
+
+  hevy2garmin:
+    image: drkostas/hevy2garmin:latest
+    container_name: hevy2garmin
+    restart: unless-stopped
+    env_file:
+      - /mnt/user/appdata/fitness-sync/garmin/.env
+    environment:
+      - HEVY_API_KEY=${HEVY_API_KEY}
+    volumes:
+      - /mnt/user/appdata/fitness-sync/garmin/tokens:/root/.garminconnect
+      - /mnt/user/appdata/fitness-sync/hevy2garmin:/root/.hevy2garmin
+    command: tail -f /dev/null
