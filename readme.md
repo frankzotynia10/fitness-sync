@@ -16,6 +16,8 @@ iOS Shortcuts   ──► PostgREST API    ──► PostgreSQL (nutrition)
 PostgreSQL      ──► claude-mcp       ──► Claude.ai
 ```
 
+![Architecture](Fitness-sync-diagram.png)
+
 ### Data flow
 
 1. **Garmin sync** pulls daily metrics (HRV, sleep, recovery, body composition) into `garmin_daily`
