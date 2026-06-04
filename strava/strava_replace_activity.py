@@ -35,21 +35,26 @@ DB_USER              = os.environ.get("DB_USER", "postgres")
 DB_PASSWORD          = os.environ["DB_PASSWORD"]
 LOOKBACK_DAYS        = int(os.environ.get("STRAVA_LOOKBACK_DAYS", "3"))
 
+# Minimum FIT size in bytes — unenhanced FITs from Garmin are very small.
+# If below this threshold, hevy2garmin probably hasn't run yet. Retry.
+MIN_FIT_BYTES        = 5000
+FIT_RETRY_ATTEMPTS   = 3
+FIT_RETRY_DELAY      = 30  # seconds between retries
+
 # Garmin activity type -> Strava sport_type
 ACTIVITY_TYPE_MAP = {
-    "strength_training": "WeightTraining",
-    "road_biking":       "Ride",
-    "indoor_cycling":    "VirtualRide",
-    "cycling":           "Ride",
-    "walking":           "Walk",
-    "running":           "Run",
-    "trail_running":     "TrailRun",
-    "hiking":            "Hike",
-    "swimming":          "Swim",
+    "strength_training":   "WeightTraining",
+    "road_biking":         "Ride",
+    "indoor_cycling":      "VirtualRide",
+    "cycling":             "Ride",
+    "walking":             "Walk",
+    "running":             "Run",
+    "trail_running":       "TrailRun",
+    "hiking":              "Hike",
+    "swimming":            "Swim",
     "open_water_swimming": "Swim",
 }
 
-# Sport types where trainer=1 should be set
 TRAINER_TYPES = {"WeightTraining", "VirtualRide"}
 
 
@@ -118,18 +123,35 @@ def get_existing_strava_dates(conn, since_date):
         return {(str(row[0]), row[1]) for row in cur.fetchall()}
 
 
-# ── Download FIT ───────────────────────────────────────────────────────────────
-def download_fit(client, garmin_activity_id):
-    zip_bytes = client.download_activity(
-        garmin_activity_id,
-        dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL
-    )
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-        fit_names = [n for n in z.namelist() if n.endswith(".fit")]
-        if not fit_names:
-            raise RuntimeError(f"No .fit in zip. Contents: {z.namelist()}")
-        fit_filename = fit_names[0]
-        fit_data = z.read(fit_filename)
+# ── Download FIT with size check + retry ──────────────────────────────────────
+def download_fit(client, garmin_activity_id, min_bytes=MIN_FIT_BYTES):
+    """
+    Download FIT from Garmin. If the file is suspiciously small (hevy2garmin
+    hasn't enhanced it yet), wait and retry up to FIT_RETRY_ATTEMPTS times.
+    """
+    for attempt in range(1, FIT_RETRY_ATTEMPTS + 1):
+        zip_bytes = client.download_activity(
+            garmin_activity_id,
+            dl_fmt=Garmin.ActivityDownloadFormat.ORIGINAL
+        )
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+            fit_names = [n for n in z.namelist() if n.endswith(".fit")]
+            if not fit_names:
+                raise RuntimeError(f"No .fit in zip. Contents: {z.namelist()}")
+            fit_filename = fit_names[0]
+            fit_data = z.read(fit_filename)
+
+        print(f"      FIT size: {len(fit_data)} bytes (attempt {attempt}/{FIT_RETRY_ATTEMPTS})")
+
+        if len(fit_data) >= min_bytes:
+            return fit_filename, fit_data
+
+        if attempt < FIT_RETRY_ATTEMPTS:
+            print(f"      FIT too small ({len(fit_data)}B < {min_bytes}B) — hevy2garmin may not have run yet. Waiting {FIT_RETRY_DELAY}s...")
+            time.sleep(FIT_RETRY_DELAY)
+        else:
+            print(f"      WARNING: FIT still small after {FIT_RETRY_ATTEMPTS} attempts. Uploading anyway.")
+
     return fit_filename, fit_data
 
 
@@ -162,8 +184,13 @@ def poll_upload(upload_id, access_token):
             timeout=30,
         )
         data            = poll.json()
-        error           = data.get("error")
+        error           = data.get("error", "")
         new_activity_id = data.get("activity_id")
+
+        # Treat duplicate as success — activity already exists on Strava
+        if error and "duplicate" in error.lower():
+            print(f"      Duplicate detected — activity already on Strava, skipping.")
+            return None
 
         if error:
             raise RuntimeError(f"Upload error: {error}")
@@ -205,7 +232,7 @@ def run_auto(lookback_days):
         activity_id   = a.get("activityId")
         activity_name = a.get("activityName", "Activity")
         type_key      = a.get("activityType", {}).get("typeKey", "")
-        start_local   = a.get("startTimeLocal", "")  # "2026-06-02 07:38:02"
+        start_local   = a.get("startTimeLocal", "")
         activity_date = start_local[:10] if start_local else None
 
         sport_type = ACTIVITY_TYPE_MAP.get(type_key)
@@ -224,10 +251,17 @@ def run_auto(lookback_days):
         try:
             fit_filename, fit_data = download_fit(garmin, activity_id)
             upload_id              = upload_fit(fit_filename, fit_data, activity_name, sport_type, access_token)
-            new_id                 = poll_upload(upload_id, access_token)
-            print(f"    ✅ https://www.strava.com/activities/{new_id}")
-            uploaded += 1
-            time.sleep(2)  # be nice to the API
+            if upload_id is None:
+                print(f"    ⚠️  Duplicate — skipped")
+                skipped += 1
+            else:
+                new_id = poll_upload(upload_id, access_token)
+                if new_id:
+                    print(f"    ✅ https://www.strava.com/activities/{new_id}")
+                    uploaded += 1
+                else:
+                    skipped += 1
+            time.sleep(2)
         except Exception as e:
             print(f"    ❌ Failed: {e}")
             errors += 1
@@ -245,8 +279,7 @@ def run_manual(garmin_id, sport_type_override, name_override):
     garmin = get_garmin_client()
     print(f"  Authenticated as: {garmin.get_full_name()}")
 
-    # Fetch activity details to get name and type
-    activities = garmin.get_activity(garmin_id)
+    activities    = garmin.get_activity(garmin_id)
     activity_name = name_override or activities.get("activityName", "Activity")
     type_key      = activities.get("activityTypeDTO", {}).get("typeKey", "")
     sport_type    = sport_type_override or ACTIVITY_TYPE_MAP.get(type_key)
@@ -265,18 +298,21 @@ def run_manual(garmin_id, sport_type_override, name_override):
 
     print(f"Uploading to Strava...")
     upload_id = upload_fit(fit_filename, fit_data, activity_name, sport_type, access_token)
-    new_id    = poll_upload(upload_id, access_token)
-
-    print(f"\n✅  https://www.strava.com/activities/{new_id}")
+    if upload_id is None:
+        print(f"\n⚠️  Duplicate — activity already on Strava.")
+        return
+    new_id = poll_upload(upload_id, access_token)
+    if new_id:
+        print(f"\n✅  https://www.strava.com/activities/{new_id}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Sync Garmin activities to Strava via FIT upload")
-    parser.add_argument("--garmin-id",   type=int, help="Manual mode: specific Garmin activity ID")
-    parser.add_argument("--sport-type",  type=str, help="Manual mode: override Strava sport type")
-    parser.add_argument("--name",        type=str, help="Manual mode: override activity name")
-    parser.add_argument("--lookback",    type=int, default=LOOKBACK_DAYS, help="Auto mode: days to look back (default: 3)")
+    parser.add_argument("--garmin-id",  type=int, help="Manual mode: specific Garmin activity ID")
+    parser.add_argument("--sport-type", type=str, help="Manual mode: override Strava sport type")
+    parser.add_argument("--name",       type=str, help="Manual mode: override activity name")
+    parser.add_argument("--lookback",   type=int, default=LOOKBACK_DAYS, help="Auto mode: days to look back (default: 3)")
     args = parser.parse_args()
 
     if args.garmin_id:
