@@ -35,7 +35,7 @@ PostgreSQL      ──► claude-mcp       ──► Claude.ai
 | `garmin-sync` | Pulls Garmin daily metrics hourly |
 | `hevy-sync` | Pulls Hevy workouts every 6 hours |
 | `strava-sync` | Pulls Strava activities + power streams hourly |
-| `hevy2garmin` | Enriches Garmin activities with Hevy data every 30 min |
+| [hevy2garmin](https://github.com/frankzotynia10/hevy2garmin) | Enriches Garmin activities with Hevy data every 30 min |
 | `claude-mcp` | Read-only MCP server for Claude |
 | `supabase-db` | PostgreSQL database |
 | `supabase-rest` | PostgREST API (used by iOS nutrition shortcut) |
