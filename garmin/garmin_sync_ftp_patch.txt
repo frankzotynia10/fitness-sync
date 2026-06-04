@@ -1,0 +1,21 @@
+        # Pull threshold HR from lactate threshold API
+        threshold_hr_cycling = None
+        try:
+            lt_data = client.get_lactate_threshold()
+            threshold_hr_cycling = deep_get(lt_data, "speed_and_heart_rate", "heartRateCycling")
+        except Exception as e:
+            print(f"  Lactate threshold fetch failed (non-fatal): {e}")
+
+        # Calculate W/kg from actual body weight in DB (most recent)
+        power_to_weight = None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT weight_kg FROM garmin_daily WHERE weight_kg IS NOT NULL ORDER BY date DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+                if row and row[0] and ftp_watts:
+                    power_to_weight = round(ftp_watts / float(row[0]), 3)
+                    print(f"  W/kg calculated from DB weight: {ftp_watts}W / {row[0]}kg = {power_to_weight}")
+        except Exception as e:
+            print(f"  W/kg calculation failed (non-fatal): {e}")
