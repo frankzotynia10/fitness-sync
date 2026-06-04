@@ -165,6 +165,64 @@ def get_existing_columns(cur, table_name="garmin_daily", schema_name="public"):
     return {row[0] for row in cur.fetchall()}
 
 
+# ── FTP sync ───────────────────────────────────────────────────────────────────
+def sync_ftp(client, conn):
+    print("\nSyncing cycling FTP...")
+    try:
+        data = client.get_cycling_ftp()
+        dump_payload("cycling_ftp", data)
+
+        ftp_watts   = data.get("functionalThresholdPower")
+        sport       = data.get("sport", "CYCLING")
+        source      = data.get("biometricSourceType")
+        calendar_dt = data.get("calendarDate")
+
+        if ftp_watts is None:
+            print("  No FTP value returned, skipping.")
+            return
+
+        # Parse date from calendarDate — may include time component
+        if calendar_dt:
+            ftp_date = datetime.date.fromisoformat(str(calendar_dt)[:10])
+        else:
+            ftp_date = datetime.date.today()
+
+        # Also pull threshold HR for cycling from lactate threshold
+        threshold_hr_cycling = None
+        power_to_weight      = None
+        try:
+            lt_data = client.get_lactate_threshold()
+            threshold_hr_cycling = deep_get(lt_data, "speed_and_heart_rate", "heartRateCycling")
+            power_to_weight      = deep_get(lt_data, "power", "powerToWeight")
+            if power_to_weight:
+                power_to_weight = round(float(power_to_weight), 3)
+        except Exception as e:
+            print(f"  Lactate threshold fetch failed (non-fatal): {e}")
+
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO public.garmin_ftp
+                        (date, ftp_watts, power_to_weight, threshold_hr_cycling, sport, source, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (date) DO UPDATE SET
+                        ftp_watts            = EXCLUDED.ftp_watts,
+                        power_to_weight      = EXCLUDED.power_to_weight,
+                        threshold_hr_cycling = EXCLUDED.threshold_hr_cycling,
+                        sport                = EXCLUDED.sport,
+                        source               = EXCLUDED.source,
+                        updated_at           = NOW()
+                    """,
+                    (ftp_date, ftp_watts, power_to_weight, threshold_hr_cycling, sport, source)
+                )
+
+        print(f"  FTP upserted: {ftp_watts}W on {ftp_date} (W/kg: {power_to_weight}, threshold HR: {threshold_hr_cycling})")
+
+    except Exception as e:
+        print(f"  FTP sync failed (non-fatal): {e}")
+
+
 def sync_date(client, target_date, conn, existing_cols):
     day_str = target_date.isoformat()
     print(f"\n{'='*50}")
@@ -644,6 +702,9 @@ def main():
                 sync_date(client, target_date, conn, existing_cols)
             except Exception as e:
                 print(f"Failed to sync {target_date.isoformat()}: {e}", file=sys.stderr)
+
+        # Sync FTP once per run (not per day — changes infrequently)
+        sync_ftp(client, conn)
 
         conn.close()
         print("\nAll dates synced.")
