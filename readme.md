@@ -1,109 +1,106 @@
 # Fitness Sync Stack
 
-Personal fitness data platform that syncs and centralizes data from multiple sources into PostgreSQL/Supabase for analytics and AI access.
-
-## CI/CD
-
-Images are built and pushed to GHCR via GitHub Actions on every push to `main`. On successful build, a webhook triggers n8n to pull and redeploy all containers via SSH.
-
-## What this stack includes
-
-- **Supabase / PostgreSQL**
-  - Central database for all synced data
-  - Runs in Docker Compose
-- **Garmin daily sync**
-  - Pulls daily recovery/body metrics from Garmin Connect
-  - Stores into `garmin_daily`
-- **Strava sync**
-  - Pulls recent activities from Strava
-  - Stores into `strava_activities`
-  - Pulls activity streams for rides
-  - Computes and stores power best efforts into:
-    - `activity_streams`
-    - `activity_best_efforts`
-- **Apple Health ingestion**
-  - iOS Shortcuts push selected health metrics into the database
-- **Hevy sync**
-  - Pulls routines and/or workouts into PostgreSQL
-- **Claude MCP**
-  - Read-only MCP server exposing curated tools and SQL-safe dataset access
+Personal fitness data platform running on a self-hosted Docker stack. Syncs data from Garmin, Hevy, and Strava into PostgreSQL, exposes it via Claude MCP for AI-powered coaching and analytics.
 
 ---
 
-# Architecture overview
+## Architecture
 
-## Data flow
+```
+Garmin Connect  ──► garmin-sync      ──► PostgreSQL
+Hevy            ──► hevy-sync        ──► PostgreSQL
+                    hevy2garmin      ──► Garmin Connect (enriches activities)
+Strava          ◄── strava-sync      ◄── PostgreSQL
+                ◄── strava-replace   ──► Strava (uploads enhanced FIT files)
+iOS Shortcuts   ──► PostgREST API    ──► PostgreSQL (nutrition)
+PostgreSQL      ──► claude-mcp       ──► Claude.ai
+```
 
-- Garmin daily sync -> `garmin_daily`
-- Strava sync -> `strava_activities`
-- Strava streams -> `strava_activity_streams` (raw) + `activity_streams` (normalized)
-- Best effort computation -> `activity_best_efforts`
-- Apple Health shortcut -> health tables/views in PostgreSQL
-- Hevy sync -> workout/routine tables
-- Claude MCP -> read-only query layer over the DB
+### Data flow
 
-## Design notes
-
-- **MCP is read-only**
-  - All writes happen in sync containers/scripts
-- **Strava is currently the automated source for stream-derived power**
-  - Best efforts are computed from Strava stream data
-- **Garmin sync currently handles daily metrics only**
-  - It is not currently the FIT/activity ingestion source
-- **Power best efforts**
-  - Currently persisted for:
-    - 5 seconds
-    - 1 minute
-    - 5 minutes
-    - 20 minutes
+1. **Garmin sync** pulls daily metrics (HRV, sleep, recovery, body composition) into `garmin_daily`
+2. **Hevy sync** pulls workouts and routines into `hevy_workouts`, `hevy_routines`, etc.
+3. **hevy2garmin** enriches Garmin strength activities with Hevy set/rep/weight data
+4. **Strava FIT replace** downloads the enhanced FIT from Garmin, uploads to Strava — Strava receives enriched activities, not generic ones
+5. **Strava sync** pulls activities and power streams from Strava into `strava_activities`
+6. **Nutrition** is pushed from an iOS Shortcut via PostgREST into `daily_nutrition`
+7. **Claude MCP** exposes all data via read-only tools for AI coaching
 
 ---
 
-# Setup order
+## Containers
 
-Recommended order for a fresh setup:
-
-1. Bring up PostgreSQL / Supabase
-2. Configure Strava sync
-3. Configure Garmin sync
-4. Configure Apple Health shortcut push
-5. Configure Hevy sync
-6. Configure Claude MCP
-7. Run SQL grants for `claude_reader`
-8. Validate tables / views / queries
+| Container | Role |
+|-----------|------|
+| `garmin-sync` | Pulls Garmin daily metrics hourly |
+| `hevy-sync` | Pulls Hevy workouts every 6 hours |
+| `strava-sync` | Pulls Strava activities + power streams hourly |
+| `hevy2garmin` | Enriches Garmin activities with Hevy data every 30 min |
+| `claude-mcp` | Read-only MCP server for Claude |
+| `supabase-db` | PostgreSQL database |
+| `supabase-rest` | PostgREST API (used by iOS nutrition shortcut) |
+| `supabase-studio` | Supabase Studio UI for DB inspection |
 
 ---
 
-# 1. Supabase / PostgreSQL setup
+## Automation (n8n)
 
-## Overview
+All orchestration runs in n8n on Apollo (10.10.0.11).
 
-This stack uses PostgreSQL as the central database. In this setup it is running via Docker Compose.
+| Workflow | Trigger | What it does |
+|----------|---------|---------------|
+| Container Sync Schedules | Hourly / 30min / 6h | Runs all sync scripts in order |
+| iOS Shortcuts Fitness Sync Trigger | Webhook (iOS Shortcut) | Full sync chain on demand |
+| Fitness Stack Deploy | GitHub Actions webhook | Deploys updated containers + runs sync |
+| Strava Webhook Handler | Strava activity create event | Runs strava-sync immediately on new activity |
+| Container Watchdog | Hourly | Restarts down containers, alerts if still down |
+| Sync Staleness Watchdog | Every 6 hours | Alerts if data sources go stale, checks Garmin token health |
+| Postgres Weekly Backup | Sunday 23:30 | pg_dump with 30-day retention |
+| Weekly Training Digest | Sunday 18:30 | Weekly summary via ntfy |
+| Weekly PR Notification | Monday 08:00 | 1RM PR check via ntfy |
 
-## What to document here
+Workflow backups are in `n8n/workflows/`.
 
-- Where the Compose file lives
-- Which service/container is the database
-- Persistent volume location
-- Port mapping
-- Database name
-- Main DB users/roles:
-  - admin / owner role
-  - sync/write role(s)
-  - `claude_reader` read-only role
+---
 
-## Important notes
+## Infrastructure
 
-- `claude_reader` needs `SELECT` on all tables Claude should access
-- New tables created later may require grants unless default privileges are configured
+- **Andromeda** (10.10.0.10) — runs all containers except nginx
+- **Apollo** (10.10.0.11) — runs nginx proxy manager and n8n
+- **CI/CD** — GitHub Actions builds images on push to `main`, pushes to GHCR, triggers n8n deploy webhook
+- **Monitoring** — ntfy notifications for sync failures, token expiry, container health
 
-## Required permissions for Claude MCP
+---
 
-Example grants:
+## Services
 
-```sql
-grant usage on schema public to claude_reader;
-grant select on all tables in schema public to claude_reader;
+- [`garmin/`](garmin/) — Garmin daily sync
+- [`strava/`](strava/) — Strava activity sync + FIT upload
+- [`hevy/`](hevy/) — Hevy workout sync
+- [`claude-mcp/`](claude-mcp/) — Claude MCP server
+- [`n8n/`](n8n/) — n8n workflow backups
 
-alter default privileges in schema public
-grant select on tables to claude_reader;
+---
+
+## Setup order (fresh install)
+
+1. Bring up PostgreSQL (Supabase stack)
+2. Run SQL grants for `claude_reader` role
+3. Configure and start `garmin-sync` — run `login_once.py` for initial auth
+4. Configure and start `hevy-sync`
+5. Configure and start `strava-sync` — run OAuth flow for initial token
+6. Deploy `hevy2garmin` container
+7. Configure and start `claude-mcp`
+8. Configure n8n workflows
+9. Register Strava webhook subscription
+10. Set up iOS Shortcuts for manual trigger and nutrition logging
+
+---
+
+## Git safety
+
+Never commit:
+- `.env` files
+- `tokens/` directories
+- `strava_tokens.json`
+- `garmin_tokens.json`
