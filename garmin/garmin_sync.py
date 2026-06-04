@@ -14,7 +14,6 @@ DB_NAME = os.environ.get("DB_NAME", "postgres")
 DB_USER = os.environ.get("DB_USER", "postgres")
 DB_PASSWORD = os.environ["DB_PASSWORD"]
 
-# Number of days back to re-sync on each run (catches late-finalizing data)
 LOOKBACK_DAYS = int(os.environ.get("GARMIN_LOOKBACK_DAYS", "3"))
 
 
@@ -181,23 +180,32 @@ def sync_ftp(client, conn):
             print("  No FTP value returned, skipping.")
             return
 
-        # Parse date from calendarDate — may include time component
         if calendar_dt:
             ftp_date = datetime.date.fromisoformat(str(calendar_dt)[:10])
         else:
             ftp_date = datetime.date.today()
 
-        # Also pull threshold HR for cycling from lactate threshold
+        # Pull threshold HR from lactate threshold API
         threshold_hr_cycling = None
-        power_to_weight      = None
         try:
             lt_data = client.get_lactate_threshold()
             threshold_hr_cycling = deep_get(lt_data, "speed_and_heart_rate", "heartRateCycling")
-            power_to_weight      = deep_get(lt_data, "power", "powerToWeight")
-            if power_to_weight:
-                power_to_weight = round(float(power_to_weight), 3)
         except Exception as e:
             print(f"  Lactate threshold fetch failed (non-fatal): {e}")
+
+        # Calculate W/kg from actual body weight in DB (most recent)
+        power_to_weight = None
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT weight_kg FROM garmin_daily WHERE weight_kg IS NOT NULL ORDER BY date DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+                if row and row[0] and ftp_watts:
+                    power_to_weight = round(ftp_watts / float(row[0]), 3)
+                    print(f"  W/kg calculated from DB weight: {ftp_watts}W / {row[0]}kg = {power_to_weight}")
+        except Exception as e:
+            print(f"  W/kg calculation failed (non-fatal): {e}")
 
         with conn:
             with conn.cursor() as cur:
@@ -283,7 +291,6 @@ def sync_date(client, target_date, conn, existing_cols):
     monthly_load_anaerobic = None
     training_balance_feedback = None
 
-    # Basic daily stats
     stats = client.get_stats(day_str)
     dump_payload("stats", stats)
 
@@ -291,7 +298,6 @@ def sync_date(client, target_date, conn, existing_cols):
     calories = stats.get("totalKilocalories")
     resting_hr = stats.get("restingHeartRate")
 
-    # Sleep + Sleep Score + Sleep Stages + User Note
     try:
         sleep_data = client.get_sleep_data(day_str)
         dump_payload("sleep_data", sleep_data)
@@ -334,7 +340,6 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Sleep fetch failed: {e}")
 
-    # Body Battery
     try:
         body_battery_data = client.get_body_battery(day_str)
         dump_payload("body_battery_data", body_battery_data)
@@ -348,7 +353,6 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Body battery fetch failed: {e}")
 
-    # HRV
     try:
         hrv_data = client.get_hrv_data(day_str)
         dump_payload("hrv_data", hrv_data)
@@ -369,7 +373,6 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"HRV fetch failed: {e}")
 
-    # Training Readiness
     try:
         readiness_data = client.get_training_readiness(day_str)
         dump_payload("training_readiness", readiness_data)
@@ -382,7 +385,6 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Training readiness fetch failed: {e}")
 
-    # VO2 Max + Heat Acclimation
     try:
         max_metrics = client.get_max_metrics(day_str)
         dump_payload("max_metrics", max_metrics)
@@ -408,7 +410,6 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Max metrics fetch failed: {e}")
 
-    # Stress
     try:
         stress_data = client.get_stress_data(day_str)
         dump_payload("stress_data", stress_data)
@@ -419,7 +420,6 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Stress fetch failed: {e}")
 
-    # Endurance Score
     try:
         week_start = target_date - datetime.timedelta(days=target_date.weekday())
         week_start_str = week_start.isoformat()
@@ -436,7 +436,6 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Endurance score fetch failed: {e}")
 
-    # Training Load / Status
     training_status_data = (
         call_if_exists(client, "get_training_status", day_str)
         or call_if_exists(client, "get_training_status_data", day_str)
@@ -482,7 +481,6 @@ def sync_date(client, target_date, conn, existing_cols):
             monthly_load_anaerobic = latest_balance.get("monthlyLoadAnaerobic")
             training_balance_feedback = latest_balance.get("trainingBalanceFeedbackPhrase")
 
-    # Recovery Time
     recovery_time_data = (
         call_if_exists(client, "get_recovery_time", day_str)
         or call_if_exists(client, "get_recovery_time_data", day_str)
@@ -500,7 +498,6 @@ def sync_date(client, target_date, conn, existing_cols):
         )
         recovery_time_hours = normalize_recovery_time_hours(raw_recovery)
 
-    # Daily weigh-ins
     try:
         weigh_ins_data = client.get_daily_weigh_ins(day_str)
         dump_payload("daily_weigh_ins", weigh_ins_data)
@@ -542,7 +539,6 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Daily weigh-ins fetch failed: {e}")
 
-    # stats_and_body fallback
     try:
         stats_and_body = client.get_stats_and_body(day_str)
         dump_payload("stats_and_body", stats_and_body)
@@ -585,7 +581,6 @@ def sync_date(client, target_date, conn, existing_cols):
     except Exception as e:
         print(f"Stats/body fetch failed: {e}")
 
-    # Build row payload and upsert
     row_data = {
         "date": target_date,
         "steps": steps,
