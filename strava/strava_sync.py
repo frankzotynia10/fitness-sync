@@ -12,6 +12,10 @@ from services.power_sync import (
     upsert_activity_stream_rows,
     upsert_best_efforts,
 )
+from services.segment_sync import (
+    ensure_segment_tables,
+    sync_segments_for_activities,
+)
 
 load_dotenv()
 
@@ -127,7 +131,7 @@ def upsert_activities(conn, activities):
 
 def upsert_activity_streams(conn, activity_id, streams):
     if not streams or not isinstance(streams, dict):
-        print(f"\u26a0\ufe0f No stream payload for activity {activity_id}")
+        print(f"⚠️ No stream payload for activity {activity_id}")
         return
 
     with conn:
@@ -190,7 +194,7 @@ def main():
             "refresh_token": new_tokens["refresh_token"],
             "expires_at": new_tokens["expires_at"],
         })
-        print("\u2705 Token refreshed and saved")
+        print("✅ Token refreshed and saved")
         access_token = new_tokens["access_token"]
 
         print("Fetching recent Strava activities...")
@@ -203,6 +207,7 @@ def main():
         )
 
         ensure_power_tables(conn)
+        ensure_segment_tables(conn)
         upsert_activities(conn, activities)
 
         ride_candidates = [
@@ -231,14 +236,31 @@ def main():
                         conn=conn, activity_id=activity_id, power_values=power_values,
                         source="strava", windows=[5, 60, 300, 1200]
                     )
-                    print(f"\u2705 Power sync complete for activity {activity_id} (rows={row_count}, best_efforts={best_efforts})")
+                    print(f"✅ Power sync complete for activity {activity_id} (rows={row_count}, best_efforts={best_efforts})")
                 else:
-                    print(f"\u26a0\ufe0f No normalized rows generated for activity {activity_id}")
+                    print(f"⚠️ No normalized rows generated for activity {activity_id}")
 
-                print(f"\u2705 Streams synced for activity {activity_id}")
+                print(f"✅ Streams synced for activity {activity_id}")
 
             except Exception as e:
-                print(f"\u26a0\ufe0f Stream sync failed for activity {activity_id}: {e}")
+                print(f"⚠️ Stream sync failed for activity {activity_id}: {e}")
+
+        # Segment efforts — fetch detailed activity for each ride
+        print(f"\nSyncing segment efforts for {len(ride_candidates)} ride activities...")
+        ride_ids = [a["id"] for a in ride_candidates if a.get("id")]
+        segment_summary = sync_segments_for_activities(
+            conn=conn,
+            access_token=access_token,
+            activity_ids=ride_ids,
+            delay=1.0,
+            log_prefix="  segments: ",
+        )
+        print(
+            f"✅ Segment sync complete — "
+            f"{segment_summary['success']} activities, "
+            f"{segment_summary['total_efforts']} efforts, "
+            f"{segment_summary['failed']} failed"
+        )
 
         conn.close()
         print("Strava sync complete.")
