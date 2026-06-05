@@ -127,7 +127,7 @@ def upsert_activities(conn, activities):
 
 def upsert_activity_streams(conn, activity_id, streams):
     if not streams or not isinstance(streams, dict):
-        print(f"⚠️ No stream payload for activity {activity_id}")
+        print(f"\u26a0\ufe0f No stream payload for activity {activity_id}")
         return
 
     with conn:
@@ -143,7 +143,6 @@ def upsert_activity_streams(conn, activity_id, streams):
                 data = stream_obj.get("data", [])
                 if not isinstance(data, list):
                     continue
-                print(f"  -> stream_type={stream_type}, points={len(data)}")
                 for idx, value in enumerate(data):
                     value_numeric = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
                     value_text = value if isinstance(value, str) else None
@@ -191,16 +190,12 @@ def main():
             "refresh_token": new_tokens["refresh_token"],
             "expires_at": new_tokens["expires_at"],
         })
-        print("✅ Token refreshed and saved")
+        print("\u2705 Token refreshed and saved")
         access_token = new_tokens["access_token"]
 
         print("Fetching recent Strava activities...")
         activities = fetch_recent_activities(access_token)
         print(f"Fetched {len(activities)} activities")
-
-        print("Recent activity sport types:")
-        for a in activities:
-            print(f"  id={a.get('id')} sport_type={a.get('sport_type')} name={a.get('name')}")
 
         print("Connecting to Postgres...")
         conn = psycopg2.connect(
@@ -222,12 +217,6 @@ def main():
                 continue
             try:
                 streams = fetch_activity_streams(access_token, activity_id)
-                print(f"Raw streams response for activity {activity_id}:")
-                try:
-                    print(json.dumps(streams, indent=2)[:5000])
-                except Exception as dump_err:
-                    print(f"Could not dump streams for {activity_id}: {dump_err}")
-
                 upsert_activity_streams(conn, activity_id, streams)
 
                 start_time = parse_start_time(a.get("start_date"))
@@ -242,14 +231,14 @@ def main():
                         conn=conn, activity_id=activity_id, power_values=power_values,
                         source="strava", windows=[5, 60, 300, 1200]
                     )
-                    print(f"✅ Power sync complete for activity {activity_id} (rows={row_count}, best_efforts={best_efforts})")
+                    print(f"\u2705 Power sync complete for activity {activity_id} (rows={row_count}, best_efforts={best_efforts})")
                 else:
-                    print(f"⚠️ No normalized rows generated for activity {activity_id}")
+                    print(f"\u26a0\ufe0f No normalized rows generated for activity {activity_id}")
 
-                print(f"✅ Streams synced for activity {activity_id}")
+                print(f"\u2705 Streams synced for activity {activity_id}")
 
             except Exception as e:
-                print(f"⚠️ Stream sync failed for activity {activity_id}: {e}")
+                print(f"\u26a0\ufe0f Stream sync failed for activity {activity_id}: {e}")
 
         conn.close()
         print("Strava sync complete.")
