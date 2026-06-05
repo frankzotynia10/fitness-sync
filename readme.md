@@ -47,7 +47,7 @@ PostgreSQL      ──► claude-mcp       ──► Claude.ai
 
 ## Automation (n8n)
 
-All orchestration runs in n8n on Apollo (10.10.0.11).
+All orchestration runs in n8n.
 
 | Workflow | Trigger | What it does |
 |----------|---------|---------------|
@@ -66,9 +66,6 @@ Workflow backups are in `n8n/workflows/`.
 ---
 
 ## Infrastructure
-
-- **Andromeda** (10.10.0.10) — runs all containers except nginx
-- **Apollo** (10.10.0.11) — runs nginx proxy manager and n8n
 - **CI/CD** — GitHub Actions builds images on push to `main`, pushes to GHCR, triggers n8n deploy webhook
 - **Monitoring** — ntfy notifications for sync failures, token expiry, container health
 
