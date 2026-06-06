@@ -64,6 +64,21 @@ def validate_garmin_session(client):
         )
 
 
+def save_tokens(client):
+    """Persist refreshed tokens back to disk so they don't expire prematurely."""
+    try:
+        if hasattr(client, 'garth'):
+            client.garth.dump(TOKEN_DIR)
+        elif hasattr(client, 'client'):
+            client.client.dump(TOKEN_DIR)
+        else:
+            print("WARNING: Could not find token store attribute to save tokens.", file=sys.stderr)
+            return
+        print(f"Tokens saved to {TOKEN_DIR}")
+    except Exception as e:
+        print(f"WARNING: Failed to save tokens: {e}", file=sys.stderr)
+
+
 def normalize_weight_to_kg(raw_weight):
     if raw_weight is None:
         return None
@@ -1245,12 +1260,7 @@ def main():
 
         sync_ftp(client, conn)
 
-        # Persist refreshed tokens back to disk so they don't expire prematurely
-        try:
-            client.garth.dump(TOKEN_DIR)
-            print(f"Tokens saved to {TOKEN_DIR}")
-        except Exception as e:
-            print(f"WARNING: Failed to save tokens: {e}", file=sys.stderr)
+        save_tokens(client)
 
         conn.close()
         print("\nAll dates synced.")
