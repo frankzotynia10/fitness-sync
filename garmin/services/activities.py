@@ -17,7 +17,7 @@ WEBHOOK_STRENGTH = "https://n8n.mayfairlabs.cloud/webhook/garmin-activity-streng
 WEBHOOK_CARDIO   = "https://n8n.mayfairlabs.cloud/webhook/garmin-activity-cardio"
 
 STRENGTH_TYPES = {"strength_training", "weight_training"}
-CARDIO_TYPES   = {"cycling", "walking", "running", "indoor_cycling", "virtual_ride"}
+CARDIO_TYPES   = {"road_biking", "cycling", "indoor_cycling", "virtual_ride", "walking", "running"}
 
 
 def _fire_webhook(url: str, activity_id: int, activity_type: str) -> None:
