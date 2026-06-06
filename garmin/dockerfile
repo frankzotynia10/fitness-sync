@@ -5,9 +5,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY login_once.py .
-COPY garmin_sync.py .
-COPY garmin_token_health.py .
+COPY . .
 
 ENV GARMINTOKENS=/root/.garminconnect
 
