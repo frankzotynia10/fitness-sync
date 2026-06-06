@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import urllib.request
 import zipfile
 
 try:
@@ -10,6 +11,24 @@ try:
 except ImportError:
     HAS_FITPARSE = False
     print("WARNING: fitparse not installed — GPS/FIT sync will be skipped.")
+
+# n8n webhook URLs
+WEBHOOK_STRENGTH = "https://n8n.mayfairlabs.cloud/webhook/garmin-activity-strength"
+WEBHOOK_CARDIO   = "https://n8n.mayfairlabs.cloud/webhook/garmin-activity-cardio"
+
+STRENGTH_TYPES = {"strength_training", "weight_training"}
+CARDIO_TYPES   = {"cycling", "walking", "running", "indoor_cycling", "virtual_ride"}
+
+
+def _fire_webhook(url: str, activity_id: int, activity_type: str) -> None:
+    try:
+        payload = f'{{"activity_id": {activity_id}, "activity_type": "{activity_type}"}}'.encode()
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10):
+            pass
+        print(f"  Webhook fired: {url} ({activity_type})")
+    except Exception as e:
+        print(f"  Webhook failed (non-fatal): {url} — {e}")
 
 
 def sync_activities(client, conn, day_str: str) -> None:
@@ -22,6 +41,8 @@ def sync_activities(client, conn, day_str: str) -> None:
             activity_id = activity.get("activityId")
             if not activity_id:
                 continue
+
+            activity_type = (activity.get("activityType") or {}).get("typeKey")
 
             hr_zone_boundaries = [None] * 5
             try:
@@ -99,7 +120,7 @@ def sync_activities(client, conn, day_str: str) -> None:
                         (
                             activity_id, start_time,
                             activity.get("activityName"),
-                            (activity.get("activityType") or {}).get("typeKey"),
+                            activity_type,
                             activity.get("distance"),
                             activity.get("elapsedDuration") or activity.get("duration"),
                             activity.get("movingDuration"),
@@ -131,7 +152,15 @@ def sync_activities(client, conn, day_str: str) -> None:
                             activity.get("vigorousIntensityMinutes"),
                         ),
                     )
-            print(f"  Activity {activity_id} ({(activity.get('activityType') or {}).get('typeKey', '?')}) upserted")
+            print(f"  Activity {activity_id} ({activity_type}) upserted")
+
+            # Fire appropriate webhook based on activity type
+            if activity_type in STRENGTH_TYPES:
+                _fire_webhook(WEBHOOK_STRENGTH, activity_id, activity_type)
+            elif activity_type in CARDIO_TYPES:
+                _fire_webhook(WEBHOOK_CARDIO, activity_id, activity_type)
+            else:
+                print(f"  Activity type '{activity_type}' — no webhook triggered")
 
             if activity.get("hasPolyline") and HAS_FITPARSE:
                 _sync_activity_gps(client, conn, activity_id)
