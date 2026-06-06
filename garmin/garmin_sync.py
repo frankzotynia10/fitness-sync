@@ -1245,6 +1245,13 @@ def main():
 
         sync_ftp(client, conn)
 
+        # Persist refreshed tokens back to disk so they don't expire prematurely
+        try:
+            client.garth.dump(TOKEN_DIR)
+            print(f"Tokens saved to {TOKEN_DIR}")
+        except Exception as e:
+            print(f"WARNING: Failed to save tokens: {e}", file=sys.stderr)
+
         conn.close()
         print("\nAll dates synced.")
 
