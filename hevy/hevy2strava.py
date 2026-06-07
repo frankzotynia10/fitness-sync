@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import datetime
-import io
 import json
 import os
 import struct
@@ -38,6 +37,9 @@ DB_NAME              = os.environ.get("DB_NAME", "postgres")
 DB_USER              = os.environ.get("DB_USER", "postgres")
 DB_PASSWORD          = os.environ["DB_PASSWORD"]
 
+FIT_EPOCH = datetime.datetime(1989, 12, 31, 0, 0, 0, tzinfo=datetime.timezone.utc)
+
+
 # ── DB ────────────────────────────────────────────────────────────────────────
 def get_conn():
     return psycopg2.connect(
@@ -47,16 +49,14 @@ def get_conn():
 
 
 def fetch_latest_workout(conn) -> dict | None:
-    """Return the most recent Hevy workout started today."""
     today = datetime.date.today().isoformat()
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT w.workout_id, w.title, w.start_time, w.end_time
-            FROM hevy_workouts w
-            WHERE DATE(w.start_time AT TIME ZONE 'America/New_York') = %s
-            ORDER BY w.start_time DESC
-            LIMIT 1
+            SELECT workout_id, title, start_time, end_time
+            FROM hevy_workouts
+            WHERE DATE(start_time AT TIME ZONE 'America/New_York') = %s
+            ORDER BY start_time DESC LIMIT 1
             """,
             (today,)
         )
@@ -82,9 +82,8 @@ def fetch_exercises(conn, workout_id: str) -> list[dict]:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT e.exercise_index, e.title, e.notes,
-                   s.set_index, s.set_type, s.weight_kg, s.reps, s.rpe,
-                   s.duration_seconds
+            SELECT e.exercise_index, e.title,
+                   s.set_index, s.weight_kg, s.reps, s.duration_seconds
             FROM hevy_workout_exercises e
             JOIN hevy_workout_sets s
               ON s.workout_id = e.workout_id AND s.exercise_index = e.exercise_index
@@ -97,19 +96,17 @@ def fetch_exercises(conn, workout_id: str) -> list[dict]:
 
     exercises: dict[int, dict] = {}
     for row in rows:
-        ex_idx, title, notes, set_idx, set_type, weight_kg, reps, rpe, duration_s = row
+        ex_idx, title, set_idx, weight_kg, reps, duration_s = row
         if ex_idx not in exercises:
-            exercises[ex_idx] = {"index": ex_idx, "title": title, "notes": notes, "sets": []}
+            exercises[ex_idx] = {"index": ex_idx, "title": title, "sets": []}
         exercises[ex_idx]["sets"].append({
-            "index": set_idx, "type": set_type,
-            "weight_kg": weight_kg, "reps": reps,
-            "rpe": rpe, "duration_seconds": duration_s,
+            "index": set_idx, "weight_kg": weight_kg,
+            "reps": reps, "duration_seconds": duration_s,
         })
     return list(exercises.values())
 
 
 def fetch_hr_data(conn, start_time: datetime.datetime, end_time: datetime.datetime) -> list[tuple]:
-    """Return list of (recorded_at, heart_rate) for the workout window."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -159,16 +156,7 @@ def get_access_token() -> str:
 
 
 # ── FIT file builder ──────────────────────────────────────────────────────────
-# Minimal FIT writer — produces a valid strength_training FIT with:
-#   - file_id message
-#   - session message
-#   - one lap per exercise
-#   - HR records for the workout window
-
-FIT_EPOCH = datetime.datetime(1989, 12, 31, 0, 0, 0, tzinfo=datetime.timezone.utc)
-
-
-def to_fit_timestamp(dt: datetime.datetime) -> int:
+def to_fit_ts(dt: datetime.datetime) -> int:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
     return int((dt - FIT_EPOCH).total_seconds())
@@ -190,185 +178,136 @@ def fit_crc(data: bytes) -> int:
     return crc
 
 
-class FitWriter:
-    """Minimal FIT file writer."""
+def build_fit(workout: dict, exercises: list[dict], hr_data: list[tuple]) -> bytes:
+    """
+    Build a minimal but valid FIT activity file.
 
-    PROTOCOL_VERSION = 0x10
-    PROFILE_VERSION  = 2132
+    FIT binary layout:
+      [14-byte file header] [definition messages + data messages] [2-byte CRC]
 
-    # Global message numbers
-    MESG_FILE_ID  = 0
-    MESG_SESSION  = 18
-    MESG_LAP      = 19
-    MESG_RECORD   = 20
-    MESG_ACTIVITY = 34
+    Definition message format:
+      Byte 0:   header  = 0x40 | local_mesg_num
+      Byte 1:   reserved = 0x00
+      Byte 2:   arch     = 0x00 (little-endian)
+      Bytes 3-4: global_mesg_num (uint16 LE)
+      Byte 5:   num_fields
+      Then for each field: [field_def_num, size, base_type_num] (3 bytes each)
 
-    # Field defs: (field_def_num, size, base_type)
-    # base_type: 0x86=uint32, 0x84=uint16, 0x00=enum, 0x02=uint8, 0x07=string, 0x8B=uint32
-    FILE_ID_FIELDS = [
-        (0,  1, 0x00),  # type: enum
-        (1,  2, 0x84),  # manufacturer: uint16
-        (2,  2, 0x84),  # product: uint16
-        (4,  4, 0x86),  # time_created: uint32
-    ]
-    SESSION_FIELDS = [
-        (253, 4, 0x86),  # timestamp
-        (2,   4, 0x86),  # start_time
-        (7,   4, 0x86),  # total_elapsed_time (ms * 1000)
-        (8,   4, 0x86),  # total_timer_time
-        (0,   1, 0x00),  # event: enum
-        (1,   1, 0x00),  # event_type: enum
-        (5,   1, 0x00),  # sport: enum (14=training)
-        (6,   1, 0x00),  # sub_sport: enum (20=strength)
-    ]
+    Data message format:
+      Byte 0: local_mesg_num
+      Then field values in little-endian order matching the definition
+    """
+
+    buf = bytearray()
+
+    # local message number counter
+    local = [0]
+
+    def define(global_num: int, fields: list[tuple]) -> int:
+        """Write a definition message, return local_num."""
+        lnum = local[0]
+        local[0] += 1
+        field_bytes = b"".join(struct.pack("BBB", f, s, t) for f, s, t in fields)
+        hdr = struct.pack("B", 0x40 | lnum)
+        body = struct.pack("<BHB", 0x00, global_num, len(fields)) + field_bytes
+        buf.extend(hdr + body)
+        return lnum
+
+    def write_data(lnum: int, fields: list[tuple], values: list):
+        buf.extend(struct.pack("B", lnum & 0x0F))
+        for val, (_, size, _) in zip(values, fields):
+            v = int(val) if val is not None else 0xFFFFFFFF
+            if size == 4:
+                buf.extend(struct.pack("<I", v & 0xFFFFFFFF))
+            elif size == 2:
+                buf.extend(struct.pack("<H", v & 0xFFFF))
+            else:
+                buf.extend(struct.pack("B", v & 0xFF))
+
+    start_ts  = to_fit_ts(workout["start_time"])
+    end_ts    = to_fit_ts(workout["end_time"])
+    elapsed_s = end_ts - start_ts
+    elapsed_ms = elapsed_s * 1000
+
+    # ── file_id (mesg 0) ──────────────────────────────────────────────────────
+    # Fields: type(enum/1B), manufacturer(uint16/2B), product(uint16/2B), time_created(uint32/4B)
+    FILE_ID_FIELDS = [(0, 1, 0x00), (1, 2, 0x84), (2, 2, 0x84), (4, 4, 0x86)]
+    ln_file_id = define(0, FILE_ID_FIELDS)
+    write_data(ln_file_id, FILE_ID_FIELDS, [4, 255, 0, start_ts])
+
+    # ── record messages (mesg 20) — HR data ───────────────────────────────────
+    if hr_data:
+        RECORD_FIELDS = [(253, 4, 0x86), (3, 1, 0x02)]  # timestamp, heart_rate
+        ln_record = define(20, RECORD_FIELDS)
+        for recorded_at, hr in hr_data:
+            if hr is None:
+                continue
+            write_data(ln_record, RECORD_FIELDS, [to_fit_ts(recorded_at), int(hr)])
+
+    # ── lap messages (mesg 19) — one per exercise ─────────────────────────────
     LAP_FIELDS = [
         (253, 4, 0x86),  # timestamp
         (2,   4, 0x86),  # start_time
-        (7,   4, 0x86),  # total_elapsed_time
-        (0,   1, 0x00),  # event
-        (1,   1, 0x00),  # event_type
+        (7,   4, 0x86),  # total_elapsed_time (ms)
+        (0,   1, 0x00),  # event (9=lap)
+        (1,   1, 0x00),  # event_type (1=stop)
+        (25,  1, 0x00),  # sport (14=training)
     ]
-    RECORD_FIELDS = [
+    ln_lap = define(19, LAP_FIELDS)
+    num_ex = max(len(exercises), 1)
+    lap_dur = elapsed_s // num_ex
+    for i, _ in enumerate(exercises):
+        lap_start = start_ts + i * lap_dur
+        lap_end   = lap_start + lap_dur
+        write_data(ln_lap, LAP_FIELDS, [lap_end, lap_start, lap_dur * 1000, 9, 1, 14])
+
+    # ── session message (mesg 18) ─────────────────────────────────────────────
+    SESSION_FIELDS = [
         (253, 4, 0x86),  # timestamp
-        (3,   1, 0x02),  # heart_rate: uint8
+        (2,   4, 0x86),  # start_time
+        (7,   4, 0x86),  # total_elapsed_time (ms)
+        (8,   4, 0x86),  # total_timer_time (ms)
+        (0,   1, 0x00),  # event (9=session)
+        (1,   1, 0x00),  # event_type (1=stop)
+        (5,   1, 0x00),  # sport (14=training)
+        (6,   1, 0x00),  # sub_sport (20=strength_training)
+        (9,   2, 0x84),  # total_cycles (use as num laps)
     ]
+    ln_session = define(18, SESSION_FIELDS)
+    write_data(ln_session, SESSION_FIELDS, [
+        end_ts, start_ts, elapsed_ms, elapsed_ms,
+        9, 1, 14, 20, len(exercises)
+    ])
+
+    # ── activity message (mesg 34) ────────────────────────────────────────────
     ACTIVITY_FIELDS = [
         (253, 4, 0x86),  # timestamp
-        (1,   4, 0x86),  # total_timer_time
+        (1,   4, 0x86),  # total_timer_time (ms)
         (2,   2, 0x84),  # num_sessions
-        (0,   1, 0x00),  # event
-        (1,   1, 0x00),  # event_type (mapped to field 28 in activity)
+        (0,   1, 0x00),  # event (26=activity)
+        (1,   1, 0x00),  # event_type (1=stop)
+        (3,   1, 0x00),  # type (0=manual)
     ]
+    ln_activity = define(34, ACTIVITY_FIELDS)
+    write_data(ln_activity, ACTIVITY_FIELDS, [end_ts, elapsed_ms, 1, 26, 1, 0])
 
-    def __init__(self):
-        self._buf = io.BytesIO()
-        self._local_msg_types: dict[int, int] = {}  # global_mesg_num -> local_mesg_num
-        self._next_local = 0
-        self._data_records: list[bytes] = []
+    data_bytes = bytes(buf)
 
-    def _define_message(self, global_mesg_num: int, fields: list) -> int:
-        local_num = self._next_local
-        self._next_local += 1
-        self._local_msg_types[global_mesg_num] = local_num
+    # ── file header ───────────────────────────────────────────────────────────
+    header = struct.pack(
+        "<BBHI4s",
+        14,                    # header_size
+        0x10,                  # protocol_version
+        2132,                  # profile_version
+        len(data_bytes),       # data_size
+        b".FIT"
+    )
+    header_crc = fit_crc(header)
+    header += struct.pack("<H", header_crc)
 
-        field_bytes = b""
-        for fdef_num, size, base_type in fields:
-            field_bytes += struct.pack("BBB", fdef_num, size, base_type)
-
-        # Definition message header: 0x40 | local_num
-        header = 0x40 | local_num
-        body = struct.pack(">BHB", 0, global_mesg_num, len(fields)) + field_bytes
-        record = struct.pack("B", header) + body
-        self._buf.write(record)
-        return local_num
-
-    def _write_data(self, global_mesg_num: int, values: list):
-        local_num = self._local_msg_types[global_mesg_num]
-        header = local_num & 0x0F
-        body = b""
-        for v, (_, size, base_type) in zip(values, self._get_fields(global_mesg_num)):
-            if size == 4:
-                body += struct.pack("<I", int(v) & 0xFFFFFFFF)
-            elif size == 2:
-                body += struct.pack("<H", int(v) & 0xFFFF)
-            else:
-                body += struct.pack("B", int(v) & 0xFF)
-        self._buf.write(struct.pack("B", header) + body)
-
-    def _get_fields(self, global_mesg_num: int):
-        return {
-            self.MESG_FILE_ID:  self.FILE_ID_FIELDS,
-            self.MESG_SESSION:  self.SESSION_FIELDS,
-            self.MESG_LAP:      self.LAP_FIELDS,
-            self.MESG_RECORD:   self.RECORD_FIELDS,
-            self.MESG_ACTIVITY: self.ACTIVITY_FIELDS,
-        }[global_mesg_num]
-
-    def build(self,
-              workout: dict,
-              exercises: list[dict],
-              hr_data: list[tuple]) -> bytes:
-
-        start_ts = to_fit_timestamp(workout["start_time"])
-        end_ts   = to_fit_timestamp(workout["end_time"])
-        elapsed  = end_ts - start_ts
-        elapsed_ms = elapsed * 1000
-
-        # File ID
-        self._define_message(self.MESG_FILE_ID, self.FILE_ID_FIELDS)
-        self._write_data(self.MESG_FILE_ID, [
-            4,      # type: activity
-            255,    # manufacturer: development
-            0,      # product
-            start_ts,
-        ])
-
-        # HR records
-        if hr_data:
-            self._define_message(self.MESG_RECORD, self.RECORD_FIELDS)
-            for recorded_at, hr in hr_data:
-                if hr is None:
-                    continue
-                ts = to_fit_timestamp(recorded_at)
-                self._write_data(self.MESG_RECORD, [ts, int(hr)])
-
-        # One lap per exercise
-        self._define_message(self.MESG_LAP, self.LAP_FIELDS)
-        num_exercises = len(exercises)
-        if num_exercises > 0:
-            lap_duration = elapsed // max(num_exercises, 1)
-            for i, exercise in enumerate(exercises):
-                lap_start = start_ts + (i * lap_duration)
-                lap_end   = lap_start + lap_duration
-                self._write_data(self.MESG_LAP, [
-                    lap_end,        # timestamp
-                    lap_start,      # start_time
-                    lap_duration * 1000,  # total_elapsed_time
-                    9,              # event: lap
-                    1,              # event_type: stop
-                ])
-
-        # Session
-        self._define_message(self.MESG_SESSION, self.SESSION_FIELDS)
-        self._write_data(self.MESG_SESSION, [
-            end_ts,
-            start_ts,
-            elapsed_ms,
-            elapsed_ms,
-            9,   # event: lap
-            1,   # event_type: stop
-            14,  # sport: training
-            20,  # sub_sport: strength_training
-        ])
-
-        # Activity
-        self._define_message(self.MESG_ACTIVITY, self.ACTIVITY_FIELDS)
-        self._write_data(self.MESG_ACTIVITY, [
-            end_ts,
-            elapsed_ms,
-            1,   # num_sessions
-            26,  # event: activity
-            1,   # event_type: stop
-        ])
-
-        data = self._buf.getvalue()
-
-        # FIT file header: 14 bytes
-        data_size = len(data)
-        header = struct.pack(
-            "<BBHI4s",
-            14,                      # header size
-            self.PROTOCOL_VERSION,
-            self.PROFILE_VERSION,
-            data_size,
-            b".FIT"
-        )
-        header_crc = fit_crc(header)
-        header += struct.pack("<H", header_crc)
-
-        body = header + data
-        data_crc = fit_crc(data)
-        return body + struct.pack("<H", data_crc)
+    file_bytes = header + data_bytes
+    data_crc = fit_crc(data_bytes)
+    return file_bytes + struct.pack("<H", data_crc)
 
 
 # ── Strava upload ─────────────────────────────────────────────────────────────
@@ -397,7 +336,7 @@ def upload_to_strava(fit_bytes: bytes, activity_name: str, access_token: str) ->
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=30,
         ).json()
-        error = poll.get("error", "")
+        error       = poll.get("error", "")
         activity_id = poll.get("activity_id")
         if error and "duplicate" in error.lower():
             print("  Duplicate — already on Strava.")
@@ -439,8 +378,7 @@ def main():
     print(f"HR data points: {len(hr_data)}")
 
     print("Building FIT file...")
-    writer = FitWriter()
-    fit_bytes = writer.build(workout, exercises, hr_data)
+    fit_bytes = build_fit(workout, exercises, hr_data)
     print(f"FIT size: {len(fit_bytes)} bytes")
 
     print("Getting Strava token...")
