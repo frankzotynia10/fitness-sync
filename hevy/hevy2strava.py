@@ -3,7 +3,8 @@
 hevy2strava.py
 
 Builds a FIT file from today's Hevy workout (from DB) + HR data
-(from garmin_hr_intraday) and uploads it directly to Strava.
+(from garmin_activity_gps, falling back to garmin_hr_intraday)
+and uploads it directly to Strava.
 
 Bypasses Garmin entirely — no training effect overwrite.
 
@@ -50,7 +51,6 @@ FIT_EPOCH = datetime.datetime(1989, 12, 31, 0, 0, 0, tzinfo=datetime.timezone.ut
 
 
 def to_fit_ts_ms(dt: datetime.datetime) -> int:
-    """Convert datetime to FIT timestamp in milliseconds."""
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=datetime.timezone.utc)
     return int((dt - FIT_EPOCH).total_seconds() * 1000)
@@ -123,6 +123,30 @@ def fetch_exercises(conn, workout_id: str) -> list[dict]:
 
 
 def fetch_hr_data(conn, start_time: datetime.datetime, end_time: datetime.datetime) -> list[tuple]:
+    """
+    Prefer per-second HR from garmin_activity_gps (captured from FIT file).
+    Fall back to garmin_hr_intraday if no activity GPS data exists.
+    """
+    # Try garmin_activity_gps first — matches by time window, per-second resolution
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT recorded_at, heart_rate
+            FROM garmin_activity_gps
+            WHERE recorded_at >= %s
+              AND recorded_at <= %s
+              AND heart_rate IS NOT NULL
+            ORDER BY recorded_at
+            """,
+            (start_time, end_time)
+        )
+        rows = cur.fetchall()
+
+    if rows:
+        print(f"  HR source: garmin_activity_gps ({len(rows)} points)")
+        return rows
+
+    # Fall back to intraday HR
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -133,7 +157,10 @@ def fetch_hr_data(conn, start_time: datetime.datetime, end_time: datetime.dateti
             """,
             (start_time, end_time)
         )
-        return cur.fetchall()
+        rows = cur.fetchall()
+
+    print(f"  HR source: garmin_hr_intraday ({len(rows)} points)")
+    return rows
 
 
 # ── Strava token helpers ──────────────────────────────────────────────────────
@@ -182,8 +209,8 @@ def build_fit(workout: dict, exercises: list[dict], hr_data: list[tuple]) -> byt
     if end_dt.tzinfo is None:
         end_dt = end_dt.replace(tzinfo=datetime.timezone.utc)
 
-    start_ms = to_fit_ts_ms(start_dt)
-    end_ms   = to_fit_ts_ms(end_dt)
+    start_ms   = to_fit_ts_ms(start_dt)
+    end_ms     = to_fit_ts_ms(end_dt)
     elapsed_ms = end_ms - start_ms
 
     # file_id
@@ -201,13 +228,13 @@ def build_fit(workout: dict, exercises: list[dict], hr_data: list[tuple]) -> byt
         if recorded_at.tzinfo is None:
             recorded_at = recorded_at.replace(tzinfo=datetime.timezone.utc)
         rec = RecordMessage()
-        rec.timestamp = to_fit_ts_ms(recorded_at)
+        rec.timestamp  = to_fit_ts_ms(recorded_at)
         rec.heart_rate = int(hr)
         builder.add(rec)
 
     # One lap per exercise
-    num_ex   = max(len(exercises), 1)
-    lap_ms   = elapsed_ms // num_ex
+    num_ex = max(len(exercises), 1)
+    lap_ms = elapsed_ms // num_ex
     for i, exercise in enumerate(exercises):
         lap_start_ms = start_ms + i * lap_ms
         lap_end_ms   = lap_start_ms + lap_ms
@@ -315,7 +342,6 @@ def main():
     print(f"Exercises: {len(exercises)}")
 
     hr_data = fetch_hr_data(conn, workout["start_time"], workout["end_time"])
-    print(f"HR data points: {len(hr_data)}")
 
     print("Building FIT file...")
     fit_bytes = build_fit(workout, exercises, hr_data)
