@@ -18,12 +18,21 @@ import argparse
 import datetime
 import json
 import os
-import struct
 import sys
 import time
 import requests
 import psycopg2
 from dotenv import load_dotenv
+
+from fit_tool.fit_file_builder import FitFileBuilder
+from fit_tool.profile.messages.file_id_message import FileIdMessage
+from fit_tool.profile.messages.activity_message import ActivityMessage
+from fit_tool.profile.messages.session_message import SessionMessage
+from fit_tool.profile.messages.lap_message import LapMessage
+from fit_tool.profile.messages.record_message import RecordMessage
+from fit_tool.profile.profile_type import (
+    FileType, Manufacturer, Sport, SubSport, Activity, Event, EventType
+)
 
 load_dotenv()
 
@@ -38,6 +47,13 @@ DB_USER              = os.environ.get("DB_USER", "postgres")
 DB_PASSWORD          = os.environ["DB_PASSWORD"]
 
 FIT_EPOCH = datetime.datetime(1989, 12, 31, 0, 0, 0, tzinfo=datetime.timezone.utc)
+
+
+def to_fit_ts_ms(dt: datetime.datetime) -> int:
+    """Convert datetime to FIT timestamp in milliseconds."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return int((dt - FIT_EPOCH).total_seconds() * 1000)
 
 
 # ── DB ────────────────────────────────────────────────────────────────────────
@@ -156,158 +172,82 @@ def get_access_token() -> str:
 
 
 # ── FIT file builder ──────────────────────────────────────────────────────────
-def to_fit_ts(dt: datetime.datetime) -> int:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
-    return int((dt - FIT_EPOCH).total_seconds())
-
-
-def fit_crc(data: bytes) -> int:
-    crc_table = [
-        0x0000, 0xCC01, 0xD801, 0x1400, 0xF001, 0x3C00, 0x2800, 0xE401,
-        0xA001, 0x6C00, 0x7800, 0xB401, 0x5000, 0x9C01, 0x8801, 0x4400,
-    ]
-    crc = 0
-    for byte in data:
-        tmp = crc_table[crc & 0xF]
-        crc = (crc >> 4) & 0x0FFF
-        crc ^= tmp ^ crc_table[byte & 0xF]
-        tmp = crc_table[crc & 0xF]
-        crc = (crc >> 4) & 0x0FFF
-        crc ^= tmp ^ crc_table[(byte >> 4) & 0xF]
-    return crc
-
-
 def build_fit(workout: dict, exercises: list[dict], hr_data: list[tuple]) -> bytes:
-    """
-    Build a minimal but valid FIT activity file.
+    builder = FitFileBuilder(auto_define=True, min_string_size=50)
 
-    FIT binary layout:
-      [14-byte file header] [definition messages + data messages] [2-byte CRC]
+    start_dt = workout["start_time"]
+    end_dt   = workout["end_time"]
+    if start_dt.tzinfo is None:
+        start_dt = start_dt.replace(tzinfo=datetime.timezone.utc)
+    if end_dt.tzinfo is None:
+        end_dt = end_dt.replace(tzinfo=datetime.timezone.utc)
 
-    Definition message format:
-      Byte 0:   header  = 0x40 | local_mesg_num
-      Byte 1:   reserved = 0x00
-      Byte 2:   arch     = 0x00 (little-endian)
-      Bytes 3-4: global_mesg_num (uint16 LE)
-      Byte 5:   num_fields
-      Then for each field: [field_def_num, size, base_type_num] (3 bytes each)
+    start_ms = to_fit_ts_ms(start_dt)
+    end_ms   = to_fit_ts_ms(end_dt)
+    elapsed_ms = end_ms - start_ms
 
-    Data message format:
-      Byte 0: local_mesg_num
-      Then field values in little-endian order matching the definition
-    """
+    # file_id
+    msg = FileIdMessage()
+    msg.type = FileType.ACTIVITY
+    msg.manufacturer = Manufacturer.DEVELOPMENT
+    msg.product = 0
+    msg.time_created = start_ms
+    builder.add(msg)
 
-    buf = bytearray()
+    # HR records
+    for recorded_at, hr in hr_data:
+        if hr is None:
+            continue
+        if recorded_at.tzinfo is None:
+            recorded_at = recorded_at.replace(tzinfo=datetime.timezone.utc)
+        rec = RecordMessage()
+        rec.timestamp = to_fit_ts_ms(recorded_at)
+        rec.heart_rate = int(hr)
+        builder.add(rec)
 
-    # local message number counter
-    local = [0]
+    # One lap per exercise
+    num_ex   = max(len(exercises), 1)
+    lap_ms   = elapsed_ms // num_ex
+    for i, exercise in enumerate(exercises):
+        lap_start_ms = start_ms + i * lap_ms
+        lap_end_ms   = lap_start_ms + lap_ms
+        lap = LapMessage()
+        lap.timestamp          = lap_end_ms
+        lap.start_time         = lap_start_ms
+        lap.total_elapsed_time = lap_ms / 1000.0
+        lap.total_timer_time   = lap_ms / 1000.0
+        lap.event              = Event.LAP
+        lap.event_type         = EventType.STOP
+        lap.sport              = Sport.TRAINING
+        lap.sub_sport          = SubSport.STRENGTH_TRAINING
+        builder.add(lap)
 
-    def define(global_num: int, fields: list[tuple]) -> int:
-        """Write a definition message, return local_num."""
-        lnum = local[0]
-        local[0] += 1
-        field_bytes = b"".join(struct.pack("BBB", f, s, t) for f, s, t in fields)
-        hdr = struct.pack("B", 0x40 | lnum)
-        body = struct.pack("<BHB", 0x00, global_num, len(fields)) + field_bytes
-        buf.extend(hdr + body)
-        return lnum
+    # session
+    session = SessionMessage()
+    session.timestamp          = end_ms
+    session.start_time         = start_ms
+    session.total_elapsed_time = elapsed_ms / 1000.0
+    session.total_timer_time   = elapsed_ms / 1000.0
+    session.sport              = Sport.TRAINING
+    session.sub_sport          = SubSport.STRENGTH_TRAINING
+    session.event              = Event.SESSION
+    session.event_type         = EventType.STOP
+    session.first_lap_index    = 0
+    session.num_laps           = len(exercises)
+    builder.add(session)
 
-    def write_data(lnum: int, fields: list[tuple], values: list):
-        buf.extend(struct.pack("B", lnum & 0x0F))
-        for val, (_, size, _) in zip(values, fields):
-            v = int(val) if val is not None else 0xFFFFFFFF
-            if size == 4:
-                buf.extend(struct.pack("<I", v & 0xFFFFFFFF))
-            elif size == 2:
-                buf.extend(struct.pack("<H", v & 0xFFFF))
-            else:
-                buf.extend(struct.pack("B", v & 0xFF))
+    # activity
+    activity = ActivityMessage()
+    activity.timestamp        = end_ms
+    activity.total_timer_time = elapsed_ms / 1000.0
+    activity.num_sessions     = 1
+    activity.type             = Activity.MANUAL
+    activity.event            = Event.ACTIVITY
+    activity.event_type       = EventType.STOP
+    builder.add(activity)
 
-    start_ts  = to_fit_ts(workout["start_time"])
-    end_ts    = to_fit_ts(workout["end_time"])
-    elapsed_s = end_ts - start_ts
-    elapsed_ms = elapsed_s * 1000
-
-    # ── file_id (mesg 0) ──────────────────────────────────────────────────────
-    # Fields: type(enum/1B), manufacturer(uint16/2B), product(uint16/2B), time_created(uint32/4B)
-    FILE_ID_FIELDS = [(0, 1, 0x00), (1, 2, 0x84), (2, 2, 0x84), (4, 4, 0x86)]
-    ln_file_id = define(0, FILE_ID_FIELDS)
-    write_data(ln_file_id, FILE_ID_FIELDS, [4, 255, 0, start_ts])
-
-    # ── record messages (mesg 20) — HR data ───────────────────────────────────
-    if hr_data:
-        RECORD_FIELDS = [(253, 4, 0x86), (3, 1, 0x02)]  # timestamp, heart_rate
-        ln_record = define(20, RECORD_FIELDS)
-        for recorded_at, hr in hr_data:
-            if hr is None:
-                continue
-            write_data(ln_record, RECORD_FIELDS, [to_fit_ts(recorded_at), int(hr)])
-
-    # ── lap messages (mesg 19) — one per exercise ─────────────────────────────
-    LAP_FIELDS = [
-        (253, 4, 0x86),  # timestamp
-        (2,   4, 0x86),  # start_time
-        (7,   4, 0x86),  # total_elapsed_time (ms)
-        (0,   1, 0x00),  # event (9=lap)
-        (1,   1, 0x00),  # event_type (1=stop)
-        (25,  1, 0x00),  # sport (14=training)
-    ]
-    ln_lap = define(19, LAP_FIELDS)
-    num_ex = max(len(exercises), 1)
-    lap_dur = elapsed_s // num_ex
-    for i, _ in enumerate(exercises):
-        lap_start = start_ts + i * lap_dur
-        lap_end   = lap_start + lap_dur
-        write_data(ln_lap, LAP_FIELDS, [lap_end, lap_start, lap_dur * 1000, 9, 1, 14])
-
-    # ── session message (mesg 18) ─────────────────────────────────────────────
-    SESSION_FIELDS = [
-        (253, 4, 0x86),  # timestamp
-        (2,   4, 0x86),  # start_time
-        (7,   4, 0x86),  # total_elapsed_time (ms)
-        (8,   4, 0x86),  # total_timer_time (ms)
-        (0,   1, 0x00),  # event (9=session)
-        (1,   1, 0x00),  # event_type (1=stop)
-        (5,   1, 0x00),  # sport (14=training)
-        (6,   1, 0x00),  # sub_sport (20=strength_training)
-        (9,   2, 0x84),  # total_cycles (use as num laps)
-    ]
-    ln_session = define(18, SESSION_FIELDS)
-    write_data(ln_session, SESSION_FIELDS, [
-        end_ts, start_ts, elapsed_ms, elapsed_ms,
-        9, 1, 14, 20, len(exercises)
-    ])
-
-    # ── activity message (mesg 34) ────────────────────────────────────────────
-    ACTIVITY_FIELDS = [
-        (253, 4, 0x86),  # timestamp
-        (1,   4, 0x86),  # total_timer_time (ms)
-        (2,   2, 0x84),  # num_sessions
-        (0,   1, 0x00),  # event (26=activity)
-        (1,   1, 0x00),  # event_type (1=stop)
-        (3,   1, 0x00),  # type (0=manual)
-    ]
-    ln_activity = define(34, ACTIVITY_FIELDS)
-    write_data(ln_activity, ACTIVITY_FIELDS, [end_ts, elapsed_ms, 1, 26, 1, 0])
-
-    data_bytes = bytes(buf)
-
-    # ── file header ───────────────────────────────────────────────────────────
-    header = struct.pack(
-        "<BBHI4s",
-        14,                    # header_size
-        0x10,                  # protocol_version
-        2132,                  # profile_version
-        len(data_bytes),       # data_size
-        b".FIT"
-    )
-    header_crc = fit_crc(header)
-    header += struct.pack("<H", header_crc)
-
-    file_bytes = header + data_bytes
-    data_crc = fit_crc(data_bytes)
-    return file_bytes + struct.pack("<H", data_crc)
+    fit_file = builder.build()
+    return fit_file.to_bytes()
 
 
 # ── Strava upload ─────────────────────────────────────────────────────────────
