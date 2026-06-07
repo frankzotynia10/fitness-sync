@@ -162,7 +162,9 @@ def sync_activities(client, conn, day_str: str) -> None:
             else:
                 print(f"  Activity type '{activity_type}' — no webhook triggered")
 
-            if activity.get("hasPolyline") and HAS_FITPARSE:
+            # Always download FIT for strength activities (HR data) and
+            # for any activity with a polyline (GPS data)
+            if HAS_FITPARSE and (activity_type in STRENGTH_TYPES or activity.get("hasPolyline")):
                 _sync_activity_gps(client, conn, activity_id)
 
         print(f"  Activities synced for {day_str}: {len(activities)}")
@@ -171,14 +173,14 @@ def sync_activities(client, conn, day_str: str) -> None:
 
 
 def _sync_activity_gps(client, conn, activity_id: int) -> None:
-    """Download FIT file and upsert per-second GPS trackpoints."""
+    """Download FIT file and upsert per-second HR + GPS trackpoints."""
     try:
         zip_data = client.download_activity(activity_id, dl_fmt=client.ActivityDownloadFormat.ORIGINAL)
         zip_buffer = io.BytesIO(zip_data)
         with zipfile.ZipFile(zip_buffer) as zf:
             fit_filename = next((f for f in zf.namelist() if f.endswith(".fit")), None)
             if not fit_filename:
-                print(f"    No FIT file in zip for activity {activity_id}, skipping GPS")
+                print(f"    No FIT file in zip for activity {activity_id}, skipping")
                 return
             fit_data = zf.read(fit_filename)
 
@@ -222,6 +224,6 @@ def _sync_activity_gps(client, conn, activity_id: int) -> None:
                         """,
                         row,
                     )
-        print(f"    GPS: {len(gps_rows)} trackpoints for activity {activity_id}")
+        print(f"    FIT: {len(gps_rows)} records for activity {activity_id}")
     except Exception as e:
-        print(f"    GPS sync failed for activity {activity_id} (non-fatal): {e}")
+        print(f"    FIT sync failed for activity {activity_id} (non-fatal): {e}")
