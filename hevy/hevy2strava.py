@@ -127,7 +127,6 @@ def fetch_hr_data(conn, start_time: datetime.datetime, end_time: datetime.dateti
     Prefer per-second HR from garmin_activity_gps (captured from FIT file).
     Fall back to garmin_hr_intraday if no activity GPS data exists.
     """
-    # Try garmin_activity_gps first — matches by time window, per-second resolution
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -146,7 +145,6 @@ def fetch_hr_data(conn, start_time: datetime.datetime, end_time: datetime.dateti
         print(f"  HR source: garmin_activity_gps ({len(rows)} points)")
         return rows
 
-    # Fall back to intraday HR
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -278,15 +276,16 @@ def build_fit(workout: dict, exercises: list[dict], hr_data: list[tuple]) -> byt
 
 
 # ── Strava upload ─────────────────────────────────────────────────────────────
-def upload_to_strava(fit_bytes: bytes, activity_name: str, access_token: str) -> int | None:
+def upload_to_strava(fit_bytes: bytes, activity_name: str, workout_id: str, access_token: str) -> int | None:
     resp = requests.post(
         "https://www.strava.com/api/v3/uploads",
         headers={"Authorization": f"Bearer {access_token}"},
         data={
-            "data_type":  "fit",
-            "name":       activity_name,
-            "sport_type": "WeightTraining",
-            "trainer":    "1",
+            "data_type":   "fit",
+            "name":        activity_name,
+            "sport_type":  "WeightTraining",
+            "trainer":     "1",
+            "external_id": f"hevy-{workout_id}",  # unique per workout — bypasses content dedup
         },
         files={"file": ("workout.fit", fit_bytes, "application/octet-stream")},
         timeout=30,
@@ -351,7 +350,7 @@ def main():
     access_token = get_access_token()
 
     print("Uploading to Strava...")
-    activity_id = upload_to_strava(fit_bytes, workout["title"], access_token)
+    activity_id = upload_to_strava(fit_bytes, workout["title"], workout["workout_id"], access_token)
     if activity_id:
         print(f"Done: https://www.strava.com/activities/{activity_id}")
     else:
