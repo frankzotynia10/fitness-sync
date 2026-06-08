@@ -2,11 +2,11 @@
 """
 hevy2strava.py
 
-Builds a FIT file from today's Hevy workout (from DB) + HR data
-(from garmin_activity_gps, falling back to garmin_hr_intraday)
-and uploads it directly to Strava.
+Builds a Strava JSON upload from today's Hevy workout (from DB) + HR data
+(from garmin_activity_gps, falling back to garmin_hr_intraday).
 
-Bypasses Garmin entirely — no training effect overwrite.
+Uses Strava's JSON upload format which supports sets, reps, weight, and
+HR streams in a single file — giving full exercise data AND heart rate.
 
 Usage:
   python hevy2strava.py                    # auto: most recent workout today
@@ -25,16 +25,6 @@ import requests
 import psycopg2
 from dotenv import load_dotenv
 
-from fit_tool.fit_file_builder import FitFileBuilder
-from fit_tool.profile.messages.file_id_message import FileIdMessage
-from fit_tool.profile.messages.activity_message import ActivityMessage
-from fit_tool.profile.messages.session_message import SessionMessage
-from fit_tool.profile.messages.lap_message import LapMessage
-from fit_tool.profile.messages.record_message import RecordMessage
-from fit_tool.profile.profile_type import (
-    FileType, Manufacturer, Sport, SubSport, Activity, Event, EventType
-)
-
 load_dotenv()
 
 # ── Env ───────────────────────────────────────────────────────────────────────
@@ -47,13 +37,57 @@ DB_NAME              = os.environ.get("DB_NAME", "postgres")
 DB_USER              = os.environ.get("DB_USER", "postgres")
 DB_PASSWORD          = os.environ["DB_PASSWORD"]
 
-FIT_EPOCH = datetime.datetime(1989, 12, 31, 0, 0, 0, tzinfo=datetime.timezone.utc)
+# ── Exercise name mapping: Hevy title → Strava exercise_type ─────────────────
+EXERCISE_MAP = {
+    # Squat
+    "Squat (Barbell)":              "BARBELL_BACK_SQUAT",
+    "Hack Squat (Machine)":         "HACK_SQUAT",
+    "Leg Press (Machine)":          "LEG_PRESS",
 
+    # Deadlift
+    "Deadlift (Trap bar)":          "TRAP_BAR_DEADLIFT",
+    "Romanian Deadlift (Barbell)":  "BARBELL_STRAIGHT_LEG_DEADLIFT",
 
-def to_fit_ts_ms(dt: datetime.datetime) -> int:
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=datetime.timezone.utc)
-    return int((dt - FIT_EPOCH).total_seconds() * 1000)
+    # Bench / Chest
+    "Bench Press (Barbell)":        "BARBELL_BENCH_PRESS",
+    "Incline Bench Press (Barbell)":"INCLINE_BARBELL_BENCH_PRESS",
+
+    # Row / Back
+    "Bent Over Row (Barbell)":      "BARBELL_ROW",
+    "Seated Cable Row - Bar Grip":  "SEATED_CABLE_ROW",
+    "Reverse Grip Lat Pulldown (Cable)": "CABLE_LAT_PULLDOWN",
+    "Reverse Fly Single Arm (Cable)":    "CABLE_REVERSE_FLYЕ",
+
+    # Pull / Chin
+    "Pull Up (Weighted)":           "PULL_UP",
+    "Chin Up (Weighted)":           "CHIN_UP",
+
+    # Shoulder
+    "Overhead Press (Barbell)":     "BARBELL_SHOULDER_PRESS",
+    "Seated Shoulder Press (Machine)": "MACHINE_SHOULDER_PRESS",
+    "Lateral Raise (Dumbbell)":     "DUMBBELL_LATERAL_RAISE",
+    "Single Arm Lateral Raise (Cable)": "CABLE_LATERAL_RAISE",
+
+    # Curl / Bicep
+    "Bicep Curl (Cable)":           "CABLE_BICEPS_CURL",
+    "Hammer Curl (Cable)":          "CABLE_HAMMER_CURL",
+    "Behind the Back Curl (Cable)": "CABLE_BICEPS_CURL",
+
+    # Tricep
+    "Overhead Triceps Extension (Cable)": "CABLE_OVERHEAD_TRICEPS_EXTENSION",
+    "Triceps Extension (Machine)":   "MACHINE_TRICEPS_EXTENSION",
+
+    # Leg / Hamstring
+    "Lying Leg Curl (Machine)":     "LYING_LEG_CURL",
+    "Seated Leg Curl (Machine)":    "SEATED_LEG_CURL",
+    "Single Leg Extensions":        "LEG_EXTENSION",
+
+    # Core / Ab
+    "Decline Crunch (Weighted)":    "DECLINE_CRUNCH",
+    "Leg Raise Parallel Bars":      "HANGING_LEG_RAISE",
+}
+
+FALLBACK_EXERCISE_TYPE = "WORKOUT_GENERIC"
 
 
 # ── DB ────────────────────────────────────────────────────────────────────────
@@ -124,17 +158,15 @@ def fetch_exercises(conn, workout_id: str) -> list[dict]:
 
 def fetch_hr_data(conn, start_time: datetime.datetime, end_time: datetime.datetime) -> list[tuple]:
     """
-    Prefer per-second HR from garmin_activity_gps (captured from FIT file).
-    Fall back to garmin_hr_intraday if no activity GPS data exists.
+    Prefer per-second HR from garmin_activity_gps.
+    Fall back to garmin_hr_intraday.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT recorded_at, heart_rate
             FROM garmin_activity_gps
-            WHERE recorded_at >= %s
-              AND recorded_at <= %s
-              AND heart_rate IS NOT NULL
+            WHERE recorded_at >= %s AND recorded_at <= %s AND heart_rate IS NOT NULL
             ORDER BY recorded_at
             """,
             (start_time, end_time)
@@ -196,10 +228,12 @@ def get_access_token() -> str:
     return new["access_token"]
 
 
-# ── FIT file builder ──────────────────────────────────────────────────────────
-def build_fit(workout: dict, exercises: list[dict], hr_data: list[tuple]) -> bytes:
-    builder = FitFileBuilder(auto_define=True, min_string_size=50)
-
+# ── JSON payload builder ──────────────────────────────────────────────────────
+def build_json_payload(workout: dict, exercises: list[dict], hr_data: list[tuple]) -> str:
+    """
+    Build Strava JSON upload payload with sets + HR stream.
+    Format: https://developers.strava.com/docs/uploads/
+    """
     start_dt = workout["start_time"]
     end_dt   = workout["end_time"]
     if start_dt.tzinfo is None:
@@ -207,87 +241,76 @@ def build_fit(workout: dict, exercises: list[dict], hr_data: list[tuple]) -> byt
     if end_dt.tzinfo is None:
         end_dt = end_dt.replace(tzinfo=datetime.timezone.utc)
 
-    start_ms   = to_fit_ts_ms(start_dt)
-    end_ms     = to_fit_ts_ms(end_dt)
-    elapsed_ms = end_ms - start_ms
+    elapsed_s = int((end_dt - start_dt).total_seconds())
+    utc_offset = 0  # store in UTC
 
-    # file_id
-    msg = FileIdMessage()
-    msg.type = FileType.ACTIVITY
-    msg.manufacturer = Manufacturer.DEVELOPMENT
-    msg.product = 0
-    msg.time_created = start_ms
-    builder.add(msg)
+    # Build sets list
+    sets = []
+    for exercise in exercises:
+        exercise_type = EXERCISE_MAP.get(exercise["title"])
+        if not exercise_type:
+            print(f"  WARNING: No mapping for '{exercise['title']}' — using {FALLBACK_EXERCISE_TYPE}")
+            exercise_type = FALLBACK_EXERCISE_TYPE
+        else:
+            print(f"  Mapped '{exercise['title']}' → {exercise_type}")
 
-    # HR records
-    for recorded_at, hr in hr_data:
-        if hr is None:
-            continue
-        if recorded_at.tzinfo is None:
-            recorded_at = recorded_at.replace(tzinfo=datetime.timezone.utc)
-        rec = RecordMessage()
-        rec.timestamp  = to_fit_ts_ms(recorded_at)
-        rec.heart_rate = int(hr)
-        builder.add(rec)
+        for s in exercise["sets"]:
+            entry = {"exercise_type": exercise_type}
+            if s["reps"] is not None:
+                entry["repetitions"] = int(s["reps"])
+            if s["weight_kg"] is not None:
+                entry["weight"] = float(s["weight_kg"])
+            if s["duration_seconds"] is not None:
+                entry["duration"] = int(s["duration_seconds"])
+            sets.append(entry)
 
-    # One lap per exercise
-    num_ex = max(len(exercises), 1)
-    lap_ms = elapsed_ms // num_ex
-    for i, exercise in enumerate(exercises):
-        lap_start_ms = start_ms + i * lap_ms
-        lap_end_ms   = lap_start_ms + lap_ms
-        lap = LapMessage()
-        lap.timestamp          = lap_end_ms
-        lap.start_time         = lap_start_ms
-        lap.total_elapsed_time = lap_ms / 1000.0
-        lap.total_timer_time   = lap_ms / 1000.0
-        lap.event              = Event.LAP
-        lap.event_type         = EventType.STOP
-        lap.sport              = Sport.TRAINING
-        lap.sub_sport          = SubSport.STRENGTH_TRAINING
-        builder.add(lap)
+    payload: dict = {
+        "version":      "1.0",
+        "start_time":   start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "utc_offset":   utc_offset,
+        "elapsed_time": elapsed_s,
+        "active_time":  elapsed_s,
+        "creator":      {"name": "Mayfair Labs hevy2strava"},
+        "sets":         sets,
+    }
 
-    # session
-    session = SessionMessage()
-    session.timestamp          = end_ms
-    session.start_time         = start_ms
-    session.total_elapsed_time = elapsed_ms / 1000.0
-    session.total_timer_time   = elapsed_ms / 1000.0
-    session.sport              = Sport.TRAINING
-    session.sub_sport          = SubSport.STRENGTH_TRAINING
-    session.event              = Event.SESSION
-    session.event_type         = EventType.STOP
-    session.first_lap_index    = 0
-    session.num_laps           = len(exercises)
-    builder.add(session)
+    # Build HR stream if available
+    if hr_data:
+        time_offsets = []
+        hr_values    = []
+        for recorded_at, hr in hr_data:
+            if hr is None:
+                continue
+            if recorded_at.tzinfo is None:
+                recorded_at = recorded_at.replace(tzinfo=datetime.timezone.utc)
+            offset = int((recorded_at - start_dt).total_seconds())
+            if 0 <= offset <= elapsed_s:
+                time_offsets.append(offset)
+                hr_values.append(int(hr))
 
-    # activity
-    activity = ActivityMessage()
-    activity.timestamp        = end_ms
-    activity.total_timer_time = elapsed_ms / 1000.0
-    activity.num_sessions     = 1
-    activity.type             = Activity.MANUAL
-    activity.event            = Event.ACTIVITY
-    activity.event_type       = EventType.STOP
-    builder.add(activity)
+        if time_offsets:
+            payload["streams"] = {
+                "time":      time_offsets,
+                "heartrate": hr_values,
+            }
+            print(f"  HR stream: {len(hr_values)} points")
 
-    fit_file = builder.build()
-    return fit_file.to_bytes()
+    return json.dumps(payload)
 
 
 # ── Strava upload ─────────────────────────────────────────────────────────────
-def upload_to_strava(fit_bytes: bytes, activity_name: str, workout_id: str, access_token: str) -> int | None:
+def upload_to_strava(json_payload: str, activity_name: str, workout_id: str, access_token: str) -> int | None:
     resp = requests.post(
         "https://www.strava.com/api/v3/uploads",
         headers={"Authorization": f"Bearer {access_token}"},
         data={
-            "data_type":   "fit",
+            "data_type":   "json",
             "name":        activity_name,
             "sport_type":  "WeightTraining",
             "trainer":     "1",
-            "external_id": f"hevy-{workout_id}",  # unique per workout — bypasses content dedup
+            "external_id": f"hevy-{workout_id}",
         },
-        files={"file": ("workout.fit", fit_bytes, "application/octet-stream")},
+        files={"file": ("workout.json", json_payload.encode(), "application/json")},
         timeout=30,
     )
     if resp.status_code not in (200, 201):
@@ -317,7 +340,7 @@ def upload_to_strava(fit_bytes: bytes, activity_name: str, workout_id: str, acce
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Build FIT from Hevy DB + upload to Strava")
+    parser = argparse.ArgumentParser(description="Build Strava JSON from Hevy DB + upload")
     parser.add_argument("--workout-id", type=str, help="Specific Hevy workout ID")
     args = parser.parse_args()
 
@@ -342,15 +365,15 @@ def main():
 
     hr_data = fetch_hr_data(conn, workout["start_time"], workout["end_time"])
 
-    print("Building FIT file...")
-    fit_bytes = build_fit(workout, exercises, hr_data)
-    print(f"FIT size: {len(fit_bytes)} bytes")
+    print("Building JSON payload...")
+    json_payload = build_json_payload(workout, exercises, hr_data)
+    print(f"Payload size: {len(json_payload)} bytes")
 
     print("Getting Strava token...")
     access_token = get_access_token()
 
     print("Uploading to Strava...")
-    activity_id = upload_to_strava(fit_bytes, workout["title"], workout["workout_id"], access_token)
+    activity_id = upload_to_strava(json_payload, workout["title"], workout["workout_id"], access_token)
     if activity_id:
         print(f"Done: https://www.strava.com/activities/{activity_id}")
     else:
