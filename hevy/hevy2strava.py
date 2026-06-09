@@ -157,10 +157,6 @@ def fetch_exercises(conn, workout_id: str) -> list[dict]:
 
 
 def fetch_hr_data(conn, start_time: datetime.datetime, end_time: datetime.datetime) -> list[tuple]:
-    """
-    Prefer per-second HR from garmin_activity_gps.
-    Fall back to garmin_hr_intraday.
-    """
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -230,10 +226,6 @@ def get_access_token() -> str:
 
 # ── JSON payload builder ──────────────────────────────────────────────────────
 def build_json_payload(workout: dict, exercises: list[dict], hr_data: list[tuple]) -> str:
-    """
-    Build Strava JSON upload payload with sets + HR stream.
-    Format: https://developers.strava.com/docs/uploads/
-    """
     start_dt = workout["start_time"]
     end_dt   = workout["end_time"]
     if start_dt.tzinfo is None:
@@ -242,9 +234,7 @@ def build_json_payload(workout: dict, exercises: list[dict], hr_data: list[tuple
         end_dt = end_dt.replace(tzinfo=datetime.timezone.utc)
 
     elapsed_s = int((end_dt - start_dt).total_seconds())
-    utc_offset = 0  # store in UTC
 
-    # Build sets list
     sets = []
     for exercise in exercises:
         exercise_type = EXERCISE_MAP.get(exercise["title"])
@@ -267,14 +257,13 @@ def build_json_payload(workout: dict, exercises: list[dict], hr_data: list[tuple
     payload: dict = {
         "version":      "1.0",
         "start_time":   start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "utc_offset":   utc_offset,
+        "utc_offset":   0,
         "elapsed_time": elapsed_s,
         "active_time":  elapsed_s,
         "creator":      {"name": "Mayfair Labs hevy2strava"},
         "sets":         sets,
     }
 
-    # Build HR stream if available
     if hr_data:
         time_offsets = []
         hr_values    = []
@@ -355,8 +344,9 @@ def main():
     else:
         workout = fetch_latest_workout(conn)
         if not workout:
-            print("No workout found for today.", file=sys.stderr)
-            sys.exit(1)
+            # No workout today — not an error, just nothing to do
+            print("No workout found for today — skipping.")
+            sys.exit(0)
 
     print(f"Workout: {workout['title']} | {workout['start_time']} → {workout['end_time']}")
 
