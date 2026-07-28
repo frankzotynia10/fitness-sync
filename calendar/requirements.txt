@@ -1,5 +1,0 @@
-requests
-psycopg2-binary
-python-dotenv
-icalendar
-recurring-ical-events
