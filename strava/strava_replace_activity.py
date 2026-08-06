@@ -154,26 +154,27 @@ def find_strava_activity_id(conn, activity_date, sport_type):
         return row[0] if row else None
 
 
-def get_hevy_workout_date(conn, hevy_id):
+def get_hevy_workout_info(conn, hevy_id):
     """
-    Return the local date (YYYY-MM-DD) this Hevy workout started, so
-    run_update_description can confirm --hevy-id and --garmin-id actually
-    refer to the same session before writing anything. Without this check,
-    two mismatched IDs get processed independently with no cross-validation -
-    each resolves fine on its own, and the result is one workout's data
-    landing on a different day's Strava activity.
+    Return (date_str, title) for this Hevy workout - the date lets
+    run_update_description confirm --hevy-id and --garmin-id actually refer
+    to the same session before writing anything (without this check, two
+    mismatched IDs get processed independently with no cross-validation, and
+    the result is one workout's data landing on a different day's Strava
+    activity); the title is used to rename the Strava activity to match.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')
+            SELECT DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York'),
+                   title
             FROM hevy_workouts
             WHERE workout_id = %s
             """,
             (hevy_id,)
         )
         row = cur.fetchone()
-        return str(row[0]) if row else None
+        return (str(row[0]), row[1]) if row else None
 
 
 def build_hevy_description(conn, hevy_id):
@@ -296,18 +297,22 @@ def poll_upload(upload_id, access_token):
 
 
 # ── Update an existing Strava activity's description (update-in-place) ────────
-def update_strava_description(strava_activity_id, description, access_token):
+def update_strava_description(strava_activity_id, description, access_token, name=None):
     """
-    PUT a new description onto an existing Strava activity. Works on any
-    activity the authenticated athlete owns, regardless of which app created
-    it (confirmed live against activity 19072431927 - DELETE returns 401,
-    PUT returns 200). Does NOT replace the underlying recording/streams -
-    only Strava's own first-party upload can do that.
+    PUT a new description (and optionally a new name) onto an existing
+    Strava activity. Works on any activity the authenticated athlete owns,
+    regardless of which app created it (confirmed live against activity
+    19072431927 - DELETE returns 401, PUT returns 200). Does NOT replace the
+    underlying recording/streams - only Strava's own first-party upload can
+    do that.
     """
+    data = {"description": description}
+    if name:
+        data["name"] = name
     resp = requests.put(
         f"https://www.strava.com/api/v3/activities/{strava_activity_id}",
         headers={"Authorization": f"Bearer {access_token}"},
-        data={"description": description},
+        data=data,
         timeout=30,
     )
     if resp.status_code != 200:
@@ -449,11 +454,12 @@ def run_update_description(hevy_id, garmin_id):
 
     conn = get_db_conn()
 
-    hevy_date = get_hevy_workout_date(conn, hevy_id)
-    if not hevy_date:
+    hevy_info = get_hevy_workout_info(conn, hevy_id)
+    if not hevy_info:
         conn.close()
         print(f"  ERROR: Hevy workout {hevy_id} not found — can't verify it matches this Garmin activity.")
         sys.exit(1)
+    hevy_date, hevy_title = hevy_info
 
     if hevy_date != activity_date:
         conn.close()
@@ -481,8 +487,8 @@ def run_update_description(hevy_id, garmin_id):
         sys.exit(2)
 
     access_token = get_access_token()
-    update_strava_description(strava_id, description, access_token)
-    print(f"  ✅ Updated description on https://www.strava.com/activities/{strava_id}")
+    update_strava_description(strava_id, description, access_token, name=hevy_title)
+    print(f"  ✅ Updated \"{hevy_title}\" description + name on https://www.strava.com/activities/{strava_id}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
