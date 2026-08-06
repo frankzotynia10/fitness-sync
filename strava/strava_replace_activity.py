@@ -154,6 +154,28 @@ def find_strava_activity_id(conn, activity_date, sport_type):
         return row[0] if row else None
 
 
+def get_hevy_workout_date(conn, hevy_id):
+    """
+    Return the local date (YYYY-MM-DD) this Hevy workout started, so
+    run_update_description can confirm --hevy-id and --garmin-id actually
+    refer to the same session before writing anything. Without this check,
+    two mismatched IDs get processed independently with no cross-validation -
+    each resolves fine on its own, and the result is one workout's data
+    landing on a different day's Strava activity.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DATE(start_time AT TIME ZONE 'UTC' AT TIME ZONE 'America/New_York')
+            FROM hevy_workouts
+            WHERE workout_id = %s
+            """,
+            (hevy_id,)
+        )
+        row = cur.fetchone()
+        return str(row[0]) if row else None
+
+
 def build_hevy_description(conn, hevy_id):
     """
     Build a human-readable exercise summary from Hevy's own set data
@@ -426,6 +448,21 @@ def run_update_description(hevy_id, garmin_id):
     print(f"  Garmin activity: {activity_date} | {sport_type}")
 
     conn = get_db_conn()
+
+    hevy_date = get_hevy_workout_date(conn, hevy_id)
+    if not hevy_date:
+        conn.close()
+        print(f"  ERROR: Hevy workout {hevy_id} not found — can't verify it matches this Garmin activity.")
+        sys.exit(1)
+
+    if hevy_date != activity_date:
+        conn.close()
+        print(f"  ERROR: date mismatch — Hevy workout {hevy_id} is from {hevy_date}, "
+              f"but Garmin activity {garmin_id} is from {activity_date}.")
+        print(f"  Refusing to write mismatched data. Double-check --hevy-id and --garmin-id "
+              f"actually refer to the same session.")
+        sys.exit(1)
+
     strava_id = find_strava_activity_id(conn, activity_date, sport_type)
 
     if not strava_id:
