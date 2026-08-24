@@ -28,7 +28,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build & push garmin-sync
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ./garmin
           file: ./garmin/dockerfile
@@ -38,7 +38,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build & push hevy-sync
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ./hevy
           file: ./hevy/Dockerfile
@@ -48,7 +48,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build & push strava-sync
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ./strava
           file: ./strava/Dockerfile
@@ -58,7 +58,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build & push claude-mcp
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v7
         with:
           context: ./claude-mcp
           file: ./claude-mcp/Dockerfile
