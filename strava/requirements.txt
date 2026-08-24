@@ -1,5 +1,5 @@
-requests
-psycopg2-binary
-python-dotenv
-garmin-fit-sdk
-garminconnect
+requests==2.34.2
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+garmin-fit-sdk==21.212.0
+garminconnect==0.3.2
