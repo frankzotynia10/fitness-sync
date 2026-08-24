@@ -1,4 +1,4 @@
-requests
-psycopg2-binary
-python-dotenv
-fit-tool
+requests==2.34.2
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+fit-tool==0.9.15
