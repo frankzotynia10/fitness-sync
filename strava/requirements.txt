@@ -1,5 +1,5 @@
 requests==2.34.2
 psycopg2-binary==2.9.12
-python-dotenv==1.2.2
+python-dotenv==1.2.3
 garmin-fit-sdk==21.212.0
 garminconnect==0.3.2
