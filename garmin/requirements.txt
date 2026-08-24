@@ -1,4 +1,4 @@
-garminconnect==0.2.32
-psycopg2-binary
-python-dotenv
-fitparse
+garminconnect==0.3.2
+psycopg2-binary==2.9.12
+python-dotenv==1.2.2
+fitparse==1.2.0
