@@ -1,5 +1,5 @@
 fastmcp==3.4.7
 psycopg2-binary==2.9.12
 python-dotenv==1.2.3
-garmin-fit-sdk==21.213.0
+garmin-fit-sdk==21.214.0
 requests==2.34.2
