@@ -15,7 +15,7 @@ Credentials: password is pulled from Windows Credential Manager via
 `keyring`, never stored in this file. One-time setup:
 
     py -m pip install keyring
-    py -c "import keyring; keyring.set_password('garmin', 'YOUR_EMAIL', 'YOUR_PASSWORD')"
+    py -c "import keyring; keyring.set_password('garmin', 'YOUR_EMAIL')"
 
 Usage:
     py garmin_pipeline_test.py "C:\\path\\to\\some_modified.fit"
@@ -27,7 +27,7 @@ import sys
 import keyring
 from garminconnect import Garmin
 
-GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL", "frankzotynia10@gmail.com")
+GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL", "YOUR_EMAIL")
 GARMIN_TOKENSTORE = r"C:\scripts\.garmin_tokens"
 
 
