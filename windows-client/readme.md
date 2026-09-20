@@ -1,7 +1,7 @@
 # Windows client: Zwift -> Garmin device-spoofing pipeline
 
-Runs on the Windows PC used for Zwift (not on Andromeda). Separate from
-the `garmin/` folder in this repo, which is the always-on Docker
+Runs on the Windows PC used for Zwift (not on the system running the main stack). 
+Separate from the `garmin/` folder in this repo, which is the always-on Docker
 Garmin<->Postgres sync service -- this is local automation that makes
 Zwift rides count toward Garmin Connect Challenges/badges, which
 Garmin doesn't do natively for Zwift-synced activities.
