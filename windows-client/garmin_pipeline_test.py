@@ -14,8 +14,11 @@ it silently again.
 Credentials: password is pulled from Windows Credential Manager via
 `keyring`, never stored in this file. One-time setup:
 
+    setx GARMIN_EMAIL "you@example.com"
     py -m pip install keyring
-    py -c "import keyring; keyring.set_password('garmin', 'YOUR_EMAIL')"
+    py -c "import keyring; keyring.set_password('garmin', 'you@example.com', 'YOUR_PASSWORD')"
+
+(open a NEW terminal window after setx before running anything else)
 
 Usage:
     py garmin_pipeline_test.py "C:\\path\\to\\some_modified.fit"
@@ -27,7 +30,13 @@ import sys
 import keyring
 from garminconnect import Garmin
 
-GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL", "YOUR_EMAIL")
+GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL")
+if not GARMIN_EMAIL:
+    raise RuntimeError(
+        'GARMIN_EMAIL environment variable not set. Run once: setx GARMIN_EMAIL "you@example.com" '
+        "then open a new terminal window."
+    )
+
 GARMIN_TOKENSTORE = r"C:\scripts\.garmin_tokens"
 
 

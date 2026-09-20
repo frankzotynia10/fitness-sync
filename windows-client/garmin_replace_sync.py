@@ -35,6 +35,14 @@ interactively at least once before wiring this into the hotkey --
 that's the run that handles MFA and caches the session token this
 script reads silently on every future run.
 
+Email: set the GARMIN_EMAIL environment variable once (setx sets it
+permanently for future terminal sessions on Windows):
+
+    setx GARMIN_EMAIL "you@example.com"
+
+Then open a NEW terminal window (setx doesn't affect the one you ran
+it in) before running this script.
+
 Cutoff for "new" files: reads the mtime of a marker file the AHK
 "Zwift Online" hotkey drops right before launching Zwift
 (C:\\scripts\\.zwift_online_marker). Falls back to "last hour" if the
@@ -58,7 +66,13 @@ import keyring
 from garminconnect import Garmin
 
 # ---- config ----------------------------------------------------------
-GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL", "frankzotynia10@gmail.com")
+GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL")
+if not GARMIN_EMAIL:
+    raise RuntimeError(
+        'GARMIN_EMAIL environment variable not set. Run once: setx GARMIN_EMAIL "you@example.com" '
+        "then open a new terminal window."
+    )
+
 GARMIN_TOKENSTORE = r"C:\scripts\.garmin_tokens"
 
 MARKER_FILE = r"C:\scripts\.zwift_online_marker"
