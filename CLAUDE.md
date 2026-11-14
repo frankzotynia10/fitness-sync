@@ -16,6 +16,7 @@ Owner: Frank. Self-hosted fitness data pipeline. Be direct, favor the simplest w
 ## Key flows
 - Hevy webhook -> n8n -> hevy2garmin sync -> poll `synced_workouts` / `pending_uploads` -> `docker exec strava-sync python3 strava_replace_activity.py --hevy-id X --garmin-id Y` (updates Strava name/description in place).
 - hevy2garmin runs in **Merge mode** (keeps watch metrics; exercises need `probability: 100` to show names on Garmin). Don't blindly reset the fork to upstream `main`: upstream 0.12.0 removed the Python dashboard.
+- garmin-sync source is `GARMIN_SOURCE` in the garmin `.env`: `official` = Garmin Personal API first (`GARMIN_PERSONAL_KEY`), garminconnect fills gaps (training metrics, some intraday, FTP, race predictions); `connect` = old behavior. Verify changes with `GARMIN_DRY_RUN=1` + `tools/compare_dry_runs.py` (see garmin/readme.md). Personal API limit: 100 req/window. Env changes need a container recreate, not just `docker exec`.
 - Garmin auto-upload to Strava is ON; the pipeline relies on it. Strava's native Sets table can't be written or deleted via API; the description text is the ceiling.
 - Strava webhook subscription 351462 triggers strava-sync on new activities.
 

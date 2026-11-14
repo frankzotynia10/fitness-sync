@@ -34,8 +34,24 @@ def decode_jwt_exp(token):
         raise RuntimeError(f"Failed to decode JWT: {e}")
 
 
+def check_personal_api():
+    """In official mode, an expired/revoked Personal API key would silently drop the
+    sync back to garminconnect, so treat it as a health failure."""
+    if os.getenv("GARMIN_SOURCE", "connect").strip().lower() != "official":
+        return
+    try:
+        from services.official import OfficialClient
+        OfficialClient()
+        print("Personal API key: OK")
+    except Exception as e:
+        print(f"ERROR: Personal API key failed: {e}")
+        print("Regenerate at connect.garmin.com > Settings > Personal API Key, update .env, recreate the container.")
+        sys.exit(1)
+
+
 def main():
     print(f"Checking Garmin token health...")
+    check_personal_api()
     print(f"Token dir: {TOKEN_DIR}")
 
     # Check file exists

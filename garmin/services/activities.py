@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import io
+import os
 import urllib.request
 import zipfile
 
@@ -20,7 +21,13 @@ STRENGTH_TYPES = {"strength_training", "weight_training"}
 CARDIO_TYPES   = {"road_biking", "cycling", "indoor_cycling", "virtual_ride", "walking", "running"}
 
 
+CYCLING_TYPES  = {"road_biking", "cycling", "indoor_cycling", "virtual_ride", "gravel_cycling", "mountain_biking"}
+
+
 def _fire_webhook(url: str, activity_id: int, activity_type: str) -> None:
+    if os.environ.get("GARMIN_DRY_RUN"):
+        print(f"  [dry-run] webhook skipped: {url} ({activity_type})")
+        return
     try:
         payload = f'{{"activity_id": {activity_id}, "activity_type": "{activity_type}"}}'.encode()
         req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
@@ -31,7 +38,38 @@ def _fire_webhook(url: str, activity_id: int, activity_type: str) -> None:
         print(f"  Webhook failed (non-fatal): {url} — {e}")
 
 
-def sync_activities(client, conn, day_str: str) -> None:
+def _zone_boundaries(client, zones_client, activity_id, activity_type) -> list:
+    """Per-activity HR zone floors. garminconnect has them per activity; the official
+    API only has the user's current zone table, used as a fallback."""
+    bounds = [None] * 5
+    if zones_client is not None:
+        try:
+            for zone in zones_client.get_activity_hr_in_timezones(activity_id) or []:
+                idx = int(zone.get("zoneNumber", 0)) - 1
+                if 0 <= idx < 5:
+                    bounds[idx] = zone.get("zoneLowBoundary")
+            if any(b is not None for b in bounds):
+                return bounds
+        except Exception:
+            pass
+    if getattr(client, "is_official", False):
+        try:
+            if not hasattr(client, "_zones_cache"):
+                client._zones_cache = client.heart_rate_zones() or []
+            want = "CYCLING" if activity_type in CYCLING_TYPES else "DEFAULT"
+            table = next((z for z in client._zones_cache if z.get("sport") == want), None)                 or next((z for z in client._zones_cache if z.get("sport") == "DEFAULT"), None)
+            if table:
+                bounds = [table.get(f"zone{i}Floor") for i in range(1, 6)]
+        except Exception as e:
+            print(f"  HR zone table fetch failed (non-fatal): {e}")
+    return bounds
+
+
+def sync_activities(client, conn, day_str: str, zones_client=None) -> None:
+    """`client` lists/downloads activities (official or garminconnect).
+    `zones_client` (garminconnect) supplies per-activity HR zone boundaries when available."""
+    if zones_client is None and not getattr(client, "is_official", False):
+        zones_client = client
     try:
         activities = client.get_activities_by_date(day_str, day_str) or []
         if not activities:
@@ -44,16 +82,7 @@ def sync_activities(client, conn, day_str: str) -> None:
 
             activity_type = (activity.get("activityType") or {}).get("typeKey")
 
-            hr_zone_boundaries = [None] * 5
-            try:
-                hr_zones_data = client.get_activity_hr_in_timezones(activity_id)
-                if hr_zones_data:
-                    for zone in hr_zones_data:
-                        idx = int(zone.get("zoneNumber", 0)) - 1
-                        if 0 <= idx < 5:
-                            hr_zone_boundaries[idx] = zone.get("zoneLowBoundary")
-            except Exception:
-                pass
+            hr_zone_boundaries = _zone_boundaries(client, zones_client, activity_id, activity_type)
 
             start_time = None
             if activity.get("startTimeGMT"):
@@ -163,8 +192,11 @@ def sync_activities(client, conn, day_str: str) -> None:
                 print(f"  Activity type '{activity_type}' — no webhook triggered")
 
             # Always download FIT for strength activities (HR data) and
-            # for any activity with a polyline (GPS data)
-            if HAS_FITPARSE and (activity_type in STRENGTH_TYPES or activity.get("hasPolyline")):
+            # for any activity with a polyline (GPS data). The official activity list
+            # has no hasPolyline, so in official mode parse every activity's FIT.
+            wants_fit = (activity_type in STRENGTH_TYPES or activity.get("hasPolyline")
+                         or getattr(client, "is_official", False))
+            if HAS_FITPARSE and wants_fit:
                 _sync_activity_gps(client, conn, activity_id)
 
         print(f"  Activities synced for {day_str}: {len(activities)}")
