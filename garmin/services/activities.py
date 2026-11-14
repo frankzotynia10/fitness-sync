@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import datetime
 import io
-import os
-import urllib.request
 import zipfile
 
 try:
@@ -13,29 +11,8 @@ except ImportError:
     HAS_FITPARSE = False
     print("WARNING: fitparse not installed — GPS/FIT sync will be skipped.")
 
-# n8n webhook URLs
-WEBHOOK_STRENGTH = "https://n8n.mayfairlabs.cloud/webhook/garmin-activity-strength"
-WEBHOOK_CARDIO   = "https://n8n.mayfairlabs.cloud/webhook/garmin-activity-cardio"
-
 STRENGTH_TYPES = {"strength_training", "weight_training"}
-CARDIO_TYPES   = {"road_biking", "cycling", "indoor_cycling", "virtual_ride", "walking", "running"}
-
-
 CYCLING_TYPES  = {"road_biking", "cycling", "indoor_cycling", "virtual_ride", "gravel_cycling", "mountain_biking"}
-
-
-def _fire_webhook(url: str, activity_id: int, activity_type: str) -> None:
-    if os.environ.get("GARMIN_DRY_RUN"):
-        print(f"  [dry-run] webhook skipped: {url} ({activity_type})")
-        return
-    try:
-        payload = f'{{"activity_id": {activity_id}, "activity_type": "{activity_type}"}}'.encode()
-        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req, timeout=10):
-            pass
-        print(f"  Webhook fired: {url} ({activity_type})")
-    except Exception as e:
-        print(f"  Webhook failed (non-fatal): {url} — {e}")
 
 
 def _zone_boundaries(client, zones_client, activity_id, activity_type) -> list:
@@ -182,14 +159,6 @@ def sync_activities(client, conn, day_str: str, zones_client=None) -> None:
                         ),
                     )
             print(f"  Activity {activity_id} ({activity_type}) upserted")
-
-            # Fire appropriate webhook based on activity type
-            if activity_type in STRENGTH_TYPES:
-                _fire_webhook(WEBHOOK_STRENGTH, activity_id, activity_type)
-            elif activity_type in CARDIO_TYPES:
-                _fire_webhook(WEBHOOK_CARDIO, activity_id, activity_type)
-            else:
-                print(f"  Activity type '{activity_type}' — no webhook triggered")
 
             # Always download FIT for strength activities (HR data) and
             # for any activity with a polyline (GPS data). The official activity list
