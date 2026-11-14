@@ -6,7 +6,7 @@ GARMIN_SOURCE=official  Personal API first (GARMIN_PERSONAL_KEY); garminconnect 
                         predictions). If garminconnect login fails, the official data
                         is still synced. If the official token fails, falls back to
                         connect mode.
-GARMIN_DRY_RUN=1        Read-only: no DB writes, webhooks or token saves. Recorded
+GARMIN_DRY_RUN=1        Read-only: no DB writes or token saves. Recorded
                         writes go to GARMIN_DRY_RUN_OUT (JSON).
 """
 from __future__ import annotations

@@ -42,7 +42,7 @@ Verified 2026-11-14 with dry runs over 7 days: `official` and `connect` produce 
 docker exec -e GARMIN_DRY_RUN=1 -e GARMIN_SOURCE=official garmin-sync python garmin_sync.py
 ```
 
-No DB writes, webhooks or token saves; recorded writes go to `GARMIN_DRY_RUN_OUT` (default `/tmp/garmin_dry_run_<source>.json`). Compare two runs with `python tools/compare_dry_runs.py a.json b.json`.
+No DB writes or token saves; recorded writes go to `GARMIN_DRY_RUN_OUT` (default `/tmp/garmin_dry_run_<source>.json`). Compare two runs with `python tools/compare_dry_runs.py a.json b.json`.
 
 ---
 
