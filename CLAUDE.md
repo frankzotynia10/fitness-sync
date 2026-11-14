@@ -30,8 +30,9 @@ Owner: Frank. Self-hosted fitness data pipeline. Be direct, favor the simplest w
 - Backups: appdata.backup runs at midnight in stop/backup/start mode.
 - hevy2garmin env holds secrets (`.env` only). Rotate if ever pasted anywhere.
 
-## Open spike: Garmin Personal API (Oct 21, 2026 launch)
-Goal: find out what the new official, free, read-only API exposes versus what garmin-sync stores via unofficial `garminconnect`.
+## Spike done: Garmin Personal API (Oct 21, 2026 launch)
+**Result (2026-11-14): see `experiments/garmin-personal-api/FINDINGS.md`.** Works; covers about two-thirds of `garmin_daily` plus activities and an unstripped original FIT. No readiness, training status/load, endurance, recovery, race predictions or FTP (unlisted paths 404). Pipeline unchanged. Key is `GARMIN_PERSONAL_KEY` in `/mnt/user/appdata/fitness-sync/garmin/.env`. The token call needs `Accept: */*` and returns a bare JWT as text/plain.
+Original goal: find out what the new official, free, read-only API exposes versus what garmin-sync stores via unofficial `garminconnect`.
 - Base `https://personal.connectapi.garmin.com`; POST the personal API key (`Authorization: ApiKey`) to `/personalapitoken-service/personal-api/personal-api-key/token` for a 24h access token (no refresh). Keys expire in 30/90/180/365 days. Personal use only.
 - Endpoints: activities (list/search, detail, FIT download, workouts, range summary), daily summaries v1/v2, sleep, HRV, body battery daily report, stress, steps, hydration, heart rate, SpO2, weight, HR zones, fitness age, nutrition logs, user settings.
 - Not listed as endpoints: VO2 max, training load/status/readiness, recovery time, Training Effect, FTP, power curve. Garmin reportedly strips undocumented fields from API files, so check whether the activity DTO or FIT carries them.

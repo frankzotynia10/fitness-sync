@@ -26,3 +26,6 @@ logs/
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Garmin personal API spike output (raw personal health data)
+experiments/garmin-personal-api/out/
