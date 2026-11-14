@@ -22,7 +22,7 @@ Owner: Frank. Self-hosted fitness data pipeline. Be direct, favor the simplest w
 
 ## Dependencies
 - Dependabot weekly (pip x4, actions). Weekly Claude scheduled task (Mondays 7:45am ET) reports open PRs; report-only.
-- `garminconnect` is unofficial and auth-sensitive (0.3.x needs Python 3.12; base images are 3.12-slim). `fit-tool` is pinned to 0.9.15 in hevy-sync because 0.9.16 regressed HR parsing. `fastmcp` is on 4.x; verify the Fitness DB MCP connector after changes.
+- `garminconnect` is unofficial and auth-sensitive (0.3.x needs Python 3.12; base images are 3.12-slim). hevy-sync no longer depends on `fit-tool` (removed 2026-11-14; unused since the Jun 8 switch to Strava JSON upload). hevy2garmin has its own `fit-tool<0.9.16` pin upstream. `fastmcp` is on 4.x; verify the Fitness DB MCP connector after changes.
 - Dependabot rebase: comment `@dependabot rebase` on conflicted PRs (the GitHub MCP token can merge but not comment or close).
 
 ## Ops gotchas
