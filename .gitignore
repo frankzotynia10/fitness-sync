@@ -29,3 +29,4 @@ Thumbs.db
 
 # Garmin personal API spike output (raw personal health data)
 experiments/garmin-personal-api/out/
+experiments/garmin-personal-api/cmp/
