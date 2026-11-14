@@ -31,13 +31,11 @@ Owner: Frank. Self-hosted fitness data pipeline. Be direct, favor the simplest w
 - Backups: appdata.backup runs at midnight in stop/backup/start mode.
 - hevy2garmin env holds secrets (`.env` only). Rotate if ever pasted anywhere.
 
-## Open spike: Garmin Personal API (Oct 21, 2026 launch)
-Goal: find out what the new official, free, read-only API exposes versus what garmin-sync stores via unofficial `garminconnect`.
-- Base `https://personal.connectapi.garmin.com`; POST the personal API key (`Authorization: ApiKey`) to `/personalapitoken-service/personal-api/personal-api-key/token` for a 24h access token (no refresh). Keys expire in 30/90/180/365 days. Personal use only.
-- Endpoints: activities (list/search, detail, FIT download, workouts, range summary), daily summaries v1/v2, sleep, HRV, body battery daily report, stress, steps, hydration, heart rate, SpO2, weight, HR zones, fitness age, nutrition logs, user settings.
-- Not listed as endpoints: VO2 max, training load/status/readiness, recovery time, Training Effect, FTP, power curve. Garmin reportedly strips undocumented fields from API files, so check whether the activity DTO or FIT carries them.
-- **Pull-only:** hevy2garmin still needs the unofficial login to write activities and sets to Garmin. Best case the API replaces only garmin-sync's reads.
-- Plan: Frank generates a key at `connect.garmin.com/app/settings/personalApiToken` and puts `GARMIN_PERSONAL_API_KEY` in a local `.env` (never committed). Build a script under `experiments/garmin-personal-api/` that fetches a recent activity, its FIT file, and one day of summary, sleep, HRV and body battery, then diffs fields against what garmin-sync stores. Time-boxed spike; output is a short findings note, not production code. Don't touch the running pipeline until the findings say it's worth it.
+## Garmin Personal API (done, live 2026-11-14)
+Spike findings: `experiments/garmin-personal-api/FINDINGS.md`. Shipped in PR #50: garmin-sync runs `GARMIN_SOURCE=official` on Andromeda (Personal API first, garminconnect gap-fill; see garmin/readme.md).
+- Overlap is identical to garminconnect (daily values, intraday HR/HRV/BB, activity summaries, FIT bytes). The API has no readiness, training status/load, race predictions or FTP (unlisted paths 404); watch FITs carry recovery time, VO2 max and activity load in msg 140 (not used yet).
+- Token call: `Accept: */*`, returns a bare JWT as text/plain, ~24h, no refresh. Rate limit 100 req/window. Key `GARMIN_PERSONAL_KEY` in `/mnt/user/appdata/fitness-sync/garmin/.env`; expires (30/90/180/365 days), and `garmin_token_health.py` fails when it does.
+- **Pull-only:** hevy2garmin and strava-sync still need the unofficial login.
 
 ## Backlog (someday)
 FatSecret nutrition logger, shed WiFi AP for Garmin sync, cycling poller (re-evaluate with Garmin auto-upload dependency), Health Auto Export swap, h2g migration before PyPI package end date 2026-10-31 (fork stays on current line for now).

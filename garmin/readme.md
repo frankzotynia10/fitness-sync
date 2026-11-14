@@ -34,7 +34,7 @@ In `official` mode:
 - Personal API rate limit: 100 requests per rolling window (429 + `retryInSeconds`). The client caches per run and retries; a 3-day run uses ~30 calls.
 - Key expires (30/90/180/365 days): regenerate at connect.garmin.com > Settings > Personal API Key and update `.env`, then recreate the container (`docker compose up -d`) so it picks up the new env.
 
-Verified 2026-11-14 with dry runs over 7 days: `official` and `connect` produce identical rows for activities, FIT/GPS and all intraday tables; `garmin_daily` differs only in `body_battery` (official uses Garmin's "most recent value"; connect used the last sampled point — 1 of 7 days differed). Background: `experiments/garmin-personal-api/FINDINGS.md` on the `spike/garmin-personal-api` branch.
+Verified 2026-11-14 with dry runs over 7 days: `official` and `connect` produce identical rows for activities, FIT/GPS and all intraday tables; `garmin_daily` differs only in `body_battery` (official uses Garmin's "most recent value"; connect used the last sampled point — 1 of 7 days differed). Background: `experiments/garmin-personal-api/FINDINGS.md`.
 
 ### Dry run
 
