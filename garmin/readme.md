@@ -88,6 +88,7 @@ DB_USER=postgres
 DB_PASSWORD=your_password
 
 GARMIN_LOOKBACK_DAYS=3
+GARMIN_TZ=America/New_York   # optional: which timezone "today" is (default UTC)
 
 # Optional: official Personal API as primary source
 GARMIN_SOURCE=official
