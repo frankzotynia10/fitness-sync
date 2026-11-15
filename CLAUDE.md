@@ -31,6 +31,13 @@ Owner: Frank. Self-hosted fitness data pipeline. Be direct, favor the simplest w
 - Backups: appdata.backup runs at midnight in stop/backup/start mode.
 - hevy2garmin env holds secrets (`.env` only). Rotate if ever pasted anywhere.
 
+## Security setup (2026-11-14)
+- **n8n webhooks:** `fitness-deploy` needs header `X-Deploy-Secret` (credential "Fitness Deploy Secret"; GitHub secret `N8N_DEPLOY_SECRET` in fitness-sync and hevy2garmin). `fitness-sync` (iOS sync) needs `X-Shortcut-Key` (credential "iOS shortcut password", stored in Frank's Passwords). `hevy-workout-saved` has its own header auth and rejects non-UUID workout IDs before SSH. `strava-webhook` can't carry a header, so it only accepts our subscription and athlete IDs (the 'Is Our Activity Create?' node; keep the IDs out of this public repo). LiveTrack Manual End and Zwift Launcher are archived (Zwift launches via HomeKit/Harmony). n8n edits are drafts until published; the editor tab blocks MCP publishes.
+- **PostgREST (supabase-rest, :3001):** connects as `authenticator`; anonymous role `web_anon` (no rights). Health Data Sync sends `Authorization: Bearer <JWT role=nutrition_writer>` (token at `/mnt/user/appdata/supabase/nutrition_token.txt`, secret `PGRST_JWT_SECRET` in the supabase `.env`); `nutrition_writer` can only SELECT/INSERT/UPDATE `daily_nutrition`. `anon`/`authenticated`/`service_role` have no table rights in `public` (incl. default privileges).
+- **Supabase ops:** every service shares `/mnt/user/appdata/supabase/.env`, so editing it and running `docker compose up -d <svc>` also recreates the DB. Always use `--no-deps`. `postgres` is not a superuser in this image; reserved roles (e.g. `authenticator`) need `psql -U supabase_admin` from inside the container.
+- **pg_hba:** bind-mounted from `/mnt/user/appdata/supabase/pg_hba.conf` (private ranges + localhost only; image default in `pg_hba.conf.orig`). Postgres sees real client IPs, so address rules work.
+- **garmin-sync:** `GARMIN_TZ=America/New_York` in the garmin `.env` (container clock is UTC).
+
 ## Garmin Personal API (done, live 2026-11-14)
 Spike findings: `experiments/garmin-personal-api/FINDINGS.md`. Shipped in PR #50: garmin-sync runs `GARMIN_SOURCE=official` on Andromeda (Personal API first, garminconnect gap-fill; see garmin/readme.md).
 - Overlap is identical to garminconnect (daily values, intraday HR/HRV/BB, activity summaries, FIT bytes). The API has no readiness, training status/load, race predictions or FTP (unlisted paths 404); watch FITs carry recovery time, VO2 max and activity load in msg 140 (not used yet).
@@ -38,4 +45,4 @@ Spike findings: `experiments/garmin-personal-api/FINDINGS.md`. Shipped in PR #50
 - **Pull-only:** hevy2garmin and strava-sync still need the unofficial login.
 
 ## Backlog (someday)
-FatSecret nutrition logger, shed WiFi AP for Garmin sync, cycling poller (re-evaluate with Garmin auto-upload dependency), Health Auto Export swap, h2g migration before PyPI package end date 2026-10-31 (fork stays on current line for now).
+FatSecret nutrition logger, shed WiFi AP for Garmin sync, cycling poller (re-evaluate with Garmin auto-upload dependency), Health Auto Export swap, h2g migration before PyPI package end date 2026-10-31 (fork stays on current line for now). Supabase Studio (:3000) has no login and is open on the LAN: bind it to 127.0.0.1 and use an SSH tunnel (left as is on 2026-11-14 by choice). hevy2garmin merge-timing fix only applies when the watch records each set.
