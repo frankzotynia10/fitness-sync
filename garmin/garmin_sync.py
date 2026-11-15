@@ -6,6 +6,8 @@ GARMIN_SOURCE=official  Personal API first (GARMIN_PERSONAL_KEY); garminconnect 
                         predictions). If garminconnect login fails, the official data
                         is still synced. If the official token fails, falls back to
                         connect mode.
+GARMIN_TZ=Area/City     Timezone that defines "today" (e.g. America/New_York).
+                        Default: the container clock (UTC).
 GARMIN_DRY_RUN=1        Read-only: no DB writes or token saves. Recorded
                         writes go to GARMIN_DRY_RUN_OUT (JSON).
 """
@@ -15,6 +17,7 @@ import datetime
 import json
 import os
 import sys
+from zoneinfo import ZoneInfo
 
 from services.client import build_client, save_tokens
 from services.db import RecordingConnection, get_connection, get_existing_columns
@@ -25,6 +28,7 @@ from services.official import OfficialClient
 LOOKBACK_DAYS = int(os.environ.get("GARMIN_LOOKBACK_DAYS", "3"))
 SOURCE = os.environ.get("GARMIN_SOURCE", "connect").strip().lower()
 DRY_RUN = bool(os.environ.get("GARMIN_DRY_RUN"))
+LOCAL_TZ = os.environ.get("GARMIN_TZ", "").strip()
 
 
 def _clients():
@@ -47,7 +51,7 @@ def _clients():
 
 
 def main() -> None:
-    today = datetime.date.today()
+    today = datetime.datetime.now(ZoneInfo(LOCAL_TZ)).date() if LOCAL_TZ else datetime.date.today()
     print(f"Syncing last {LOOKBACK_DAYS} days (today + {LOOKBACK_DAYS - 1} prior), "
           f"source={SOURCE}{' [DRY RUN]' if DRY_RUN else ''}...")
 

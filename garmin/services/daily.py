@@ -91,12 +91,12 @@ def connect_fields(client, target_date: datetime.date, blocks=ALL_BLOCKS) -> dic
         try:
             sleep_data = client.get_sleep_data(day_str)
             dump_payload("sleep_data", sleep_data)
-            ds = sleep_data.get("dailySleepDTO", {})
+            ds = (sleep_data or {}).get("dailySleepDTO") or {}
             r.update({
                 "sleep_seconds": ds.get("sleepTimeSeconds"),
                 "sleep_notes": ds.get("userNote") or None,
                 "sleep_stress_avg": ds.get("avgSleepStress"),
-                "sleep_score": ds.get("sleepScores", {}).get("overall", {}).get("value"),
+                "sleep_score": ((ds.get("sleepScores") or {}).get("overall") or {}).get("value"),
                 "deep_sleep_seconds": first_non_null(ds.get("deepSleepSeconds"), ds.get("deepSleepDurationInSeconds"), recursive_find_first(sleep_data, {"deepSleepSeconds", "deepSleepDurationInSeconds"})),
                 "light_sleep_seconds": first_non_null(ds.get("lightSleepSeconds"), ds.get("lightSleepDurationInSeconds"), recursive_find_first(sleep_data, {"lightSleepSeconds", "lightSleepDurationInSeconds"})),
                 "rem_sleep_seconds": first_non_null(ds.get("remSleepSeconds"), ds.get("remSleepDurationInSeconds"), recursive_find_first(sleep_data, {"remSleepSeconds", "remSleepDurationInSeconds"})),
@@ -162,44 +162,50 @@ def connect_fields(client, target_date: datetime.date, blocks=ALL_BLOCKS) -> dic
             endurance_data = client.get_endurance_score(week_start, day_str)
             dump_payload("endurance_score", endurance_data)
             if isinstance(endurance_data, dict):
-                r["endurance_score"] = endurance_data.get("enduranceScoreDTO", {}).get("overallScore")
+                r["endurance_score"] = (endurance_data.get("enduranceScoreDTO") or {}).get("overallScore")
         except Exception as e:
             print(f"Endurance score fetch failed: {e}")
 
     if "training_status" in blocks:
-        ts_data = (call_if_exists(client, "get_training_status", day_str)
-                   or call_if_exists(client, "get_training_status_data", day_str))
-        if ts_data:
-            dump_payload("training_status_data", ts_data)
-            latest_status_map = ts_data.get("mostRecentTrainingStatus", {}).get("latestTrainingStatusData", {})
-            latest_status = next(iter(latest_status_map.values())) if isinstance(latest_status_map, dict) and latest_status_map else None
-            if isinstance(latest_status, dict):
-                acute_dto = latest_status.get("acuteTrainingLoadDTO", {})
-                r["training_load"] = latest_status.get("weeklyTrainingLoad") or acute_dto.get("dailyTrainingLoadAcute")
-                r["acute_training_load"] = acute_dto.get("dailyTrainingLoadAcute")
-                r["chronic_training_load"] = acute_dto.get("dailyTrainingLoadChronic")
-                r["training_status"] = (latest_status.get("trainingStatusFeedbackPhrase")
-                                        or (str(latest_status.get("trainingStatus")) if latest_status.get("trainingStatus") is not None else None))
-                r["acwr_ratio"] = acute_dto.get("dailyAcuteChronicWorkloadRatio")
-                r["acwr_percent"] = acute_dto.get("acwrPercent")
-            balance_map = ts_data.get("mostRecentTrainingLoadBalance", {}).get("metricsTrainingLoadBalanceDTOMap", {})
-            latest_balance = next(iter(balance_map.values())) if isinstance(balance_map, dict) and balance_map else None
-            if isinstance(latest_balance, dict):
-                r["monthly_load_aerobic_low"] = latest_balance.get("monthlyLoadAerobicLow")
-                r["monthly_load_aerobic_high"] = latest_balance.get("monthlyLoadAerobicHigh")
-                r["monthly_load_anaerobic"] = latest_balance.get("monthlyLoadAnaerobic")
-                r["training_balance_feedback"] = latest_balance.get("trainingBalanceFeedbackPhrase")
+        try:
+            ts_data = (call_if_exists(client, "get_training_status", day_str)
+                       or call_if_exists(client, "get_training_status_data", day_str))
+            if ts_data:
+                dump_payload("training_status_data", ts_data)
+                latest_status_map = (ts_data.get("mostRecentTrainingStatus") or {}).get("latestTrainingStatusData") or {}
+                latest_status = next(iter(latest_status_map.values())) if isinstance(latest_status_map, dict) and latest_status_map else None
+                if isinstance(latest_status, dict):
+                    acute_dto = latest_status.get("acuteTrainingLoadDTO") or {}
+                    r["training_load"] = latest_status.get("weeklyTrainingLoad") or acute_dto.get("dailyTrainingLoadAcute")
+                    r["acute_training_load"] = acute_dto.get("dailyTrainingLoadAcute")
+                    r["chronic_training_load"] = acute_dto.get("dailyTrainingLoadChronic")
+                    r["training_status"] = (latest_status.get("trainingStatusFeedbackPhrase")
+                                            or (str(latest_status.get("trainingStatus")) if latest_status.get("trainingStatus") is not None else None))
+                    r["acwr_ratio"] = acute_dto.get("dailyAcuteChronicWorkloadRatio")
+                    r["acwr_percent"] = acute_dto.get("acwrPercent")
+                balance_map = (ts_data.get("mostRecentTrainingLoadBalance") or {}).get("metricsTrainingLoadBalanceDTOMap") or {}
+                latest_balance = next(iter(balance_map.values())) if isinstance(balance_map, dict) and balance_map else None
+                if isinstance(latest_balance, dict):
+                    r["monthly_load_aerobic_low"] = latest_balance.get("monthlyLoadAerobicLow")
+                    r["monthly_load_aerobic_high"] = latest_balance.get("monthlyLoadAerobicHigh")
+                    r["monthly_load_anaerobic"] = latest_balance.get("monthlyLoadAnaerobic")
+                    r["training_balance_feedback"] = latest_balance.get("trainingBalanceFeedbackPhrase")
+        except Exception as e:
+            print(f"Training status fetch failed: {e}")
 
     if "recovery" in blocks:
-        rt_data = (call_if_exists(client, "get_recovery_time", day_str)
-                   or call_if_exists(client, "get_recovery_time_data", day_str))
-        if rt_data:
-            dump_payload("recovery_time_data", rt_data)
-            raw_recovery = first_non_null(recursive_find_first(rt_data, {
-                "recoveryTime", "recoveryTimeHrs", "recoveryHours", "recoveryTimeHours",
-                "recoveryTimeInSeconds", "recoveryTimeSeconds", "recoveryTimeMillis", "remainingRecoveryTime",
-            }))
-            r["recovery_time_hours"] = normalize_recovery_time_hours(raw_recovery)
+        try:
+            rt_data = (call_if_exists(client, "get_recovery_time", day_str)
+                       or call_if_exists(client, "get_recovery_time_data", day_str))
+            if rt_data:
+                dump_payload("recovery_time_data", rt_data)
+                raw_recovery = first_non_null(recursive_find_first(rt_data, {
+                    "recoveryTime", "recoveryTimeHrs", "recoveryHours", "recoveryTimeHours",
+                    "recoveryTimeInSeconds", "recoveryTimeSeconds", "recoveryTimeMillis", "remainingRecoveryTime",
+                }))
+                r["recovery_time_hours"] = normalize_recovery_time_hours(raw_recovery)
+        except Exception as e:
+            print(f"Recovery time fetch failed: {e}")
 
     if "body" in blocks:
         body: dict = {}
@@ -417,6 +423,13 @@ def sync_date(gc, off, target_date: datetime.date, conn, existing_cols: set) -> 
             fields = merge_official_first(fields, connect_fields(gc, target_date, GAP_FILL_BLOCKS))
     else:
         fields = connect_fields(gc, target_date)
+
+    if not any(v is not None for v in fields.values()):
+        # Garmin has nothing for this day yet (e.g. "today" in UTC is already
+        # tomorrow locally). Writing an all-NULL row would make it the "latest
+        # day" for every consumer, so skip the day entirely.
+        print(f"No Garmin data for {day_str} yet; skipping.")
+        return
 
     upsert_daily(conn, target_date, fields, existing_cols)
     print(f"Upserted {day_str} OK.")
