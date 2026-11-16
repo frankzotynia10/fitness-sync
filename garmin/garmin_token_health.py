@@ -9,8 +9,10 @@ Run from the staleness watchdog or a dedicated n8n schedule.
 """
 
 import os
+import re
 import sys
 import json
+import time
 import base64
 import datetime
 from dotenv import load_dotenv
@@ -21,6 +23,10 @@ TOKEN_DIR  = os.getenv("GARMINTOKENS", "/root/.garminconnect")
 TOKEN_FILE = os.path.join(TOKEN_DIR, "garmin_tokens.json")
 # Warn if token expires within this many hours
 WARN_HOURS = 12
+
+# Personal API check: retry transient failures, fail hard only on a 4xx
+PERSONAL_API_ATTEMPTS = 2
+PERSONAL_API_RETRY_SLEEP = 10
 
 
 def decode_jwt_exp(token):
@@ -35,18 +41,35 @@ def decode_jwt_exp(token):
 
 
 def check_personal_api():
-    """In official mode, an expired/revoked Personal API key would silently drop the
-    sync back to garminconnect, so treat it as a health failure."""
+    """In official mode, a rejected/revoked Personal API key would silently drop the
+    sync back to garminconnect, so treat that as a health failure.
+
+    Timeouts, 5xx and network errors are transient: retry, and if the API is still
+    unreachable print a WARNING (no 'ERROR' in output) instead of failing, since the
+    sync falls back to garminconnect on its own."""
     if os.getenv("GARMIN_SOURCE", "connect").strip().lower() != "official":
         return
-    try:
-        from services.official import OfficialClient
-        OfficialClient()
-        print("Personal API key: OK")
-    except Exception as e:
-        print(f"ERROR: Personal API key failed: {e}")
-        print("Regenerate at connect.garmin.com > Settings > Personal API Key, update .env, recreate the container.")
-        sys.exit(1)
+    last = None
+    for attempt in range(1, PERSONAL_API_ATTEMPTS + 1):
+        try:
+            from services.official import OfficialClient
+            OfficialClient()
+            print("Personal API key: OK")
+            return
+        except Exception as e:
+            last = e
+            msg = str(e)
+            m = re.search(r"HTTP (4\d\d)", msg)
+            key_rejected = ("is not set" in msg) or (m and m.group(1) != "429")
+            if key_rejected:
+                print(f"ERROR: Personal API key rejected: {msg}")
+                print("Regenerate at connect.garmin.com > Settings > Personal API Key, update .env, recreate the container.")
+                sys.exit(1)
+            print(f"Personal API attempt {attempt}/{PERSONAL_API_ATTEMPTS} failed (transient): {msg}")
+            if attempt < PERSONAL_API_ATTEMPTS:
+                time.sleep(PERSONAL_API_RETRY_SLEEP)
+    print(f"WARNING: Personal API unreachable after {PERSONAL_API_ATTEMPTS} attempts: {last}. "
+          "Not treating as a key failure; sync falls back to garminconnect.")
 
 
 def main():
