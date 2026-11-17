@@ -6,6 +6,7 @@ import psycopg2
 import requests
 from dotenv import load_dotenv
 
+from services.ids import strava_id
 from services.strava_streams import normalize_strava_streams
 from services.power_sync import (
     ensure_power_tables,
@@ -118,7 +119,7 @@ def upsert_activities(conn, activities):
                         updated_at = NOW();
                     """,
                     (
-                        a.get("id"), a.get("start_date"), a.get("name"), a.get("sport_type"),
+                        strava_id(a), a.get("start_date"), a.get("name"), a.get("sport_type"),
                         a.get("distance"), a.get("moving_time"), a.get("elapsed_time"),
                         a.get("total_elevation_gain"), a.get("average_speed"), a.get("max_speed"),
                         a.get("average_heartrate"), a.get("max_heartrate"), a.get("average_watts"),
@@ -217,7 +218,7 @@ def main():
         print(f"Fetching streams for {len(ride_candidates)} ride activities...")
 
         for a in ride_candidates:
-            activity_id = a.get("id")
+            activity_id = strava_id(a)
             if not activity_id:
                 continue
             try:
@@ -247,7 +248,7 @@ def main():
 
         # Segment efforts — fetch detailed activity for each ride
         print(f"\nSyncing segment efforts for {len(ride_candidates)} ride activities...")
-        ride_ids = [a["id"] for a in ride_candidates if a.get("id")]
+        ride_ids = [strava_id(a) for a in ride_candidates if strava_id(a)]
         segment_summary = sync_segments_for_activities(
             conn=conn,
             access_token=access_token,

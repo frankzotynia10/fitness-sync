@@ -6,6 +6,8 @@ Handles fetching and upserting Strava segment efforts.
 import time
 import requests
 
+from services.ids import strava_id
+
 
 RATE_LIMIT_DELAY = 1.0  # seconds between detailed activity fetches
 
@@ -85,9 +87,9 @@ def upsert_segment_efforts(conn, activity_id: int, segment_efforts: list) -> int
                         kom_rank          = EXCLUDED.kom_rank,
                         updated_at        = NOW()
                 """, (
-                    effort.get("id"),
+                    strava_id(effort),
                     activity_id,
-                    segment.get("id"),
+                    strava_id(segment),
                     segment.get("name"),
                     effort.get("elapsed_time"),
                     effort.get("moving_time"),

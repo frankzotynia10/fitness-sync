@@ -189,6 +189,17 @@ def fetch_hr_data(conn, start_time: datetime.datetime, end_time: datetime.dateti
     return rows
 
 
+def _strava_id(obj, key="id"):
+    """Read a Strava ID via its `<key>_str` twin (Strava's guidance for IDs > 2^53)."""
+    if not obj:
+        return None
+    s = obj.get(f"{key}_str")
+    if s not in (None, ""):
+        return int(s)
+    v = obj.get(key)
+    return int(v) if v is not None else None
+
+
 # ── Strava token helpers ──────────────────────────────────────────────────────
 def load_tokens() -> dict:
     with open(STRAVA_TOKENS_FILE, "r", encoding="utf-8") as f:
@@ -304,7 +315,7 @@ def upload_to_strava(json_payload: str, activity_name: str, workout_id: str, acc
     )
     if resp.status_code not in (200, 201):
         raise RuntimeError(f"Upload failed [{resp.status_code}]: {resp.text}")
-    upload_id = resp.json().get("id")
+    upload_id = _strava_id(resp.json())
     print(f"  Upload queued: id={upload_id}")
 
     for _ in range(12):
@@ -315,7 +326,7 @@ def upload_to_strava(json_payload: str, activity_name: str, workout_id: str, acc
             timeout=30,
         ).json()
         error       = poll.get("error", "")
-        activity_id = poll.get("activity_id")
+        activity_id = _strava_id(poll, "activity_id")
         if error and "duplicate" in error.lower():
             print("  Duplicate — already on Strava.")
             return None

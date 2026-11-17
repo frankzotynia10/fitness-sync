@@ -29,6 +29,8 @@ import psycopg2
 from dotenv import load_dotenv
 from garminconnect import Garmin
 
+from services.ids import strava_id
+
 # ── Env ──────────────────────────────────────────────────────────────────────
 load_dotenv()
 
@@ -268,7 +270,7 @@ def upload_fit(fit_filename, fit_data, activity_name, sport_type, access_token):
     )
     if resp.status_code not in (200, 201):
         raise RuntimeError(f"Upload failed [{resp.status_code}]: {resp.text}")
-    return resp.json().get("id")
+    return strava_id(resp.json())
 
 
 def poll_upload(upload_id, access_token):
@@ -281,7 +283,7 @@ def poll_upload(upload_id, access_token):
         )
         data            = poll.json()
         error           = data.get("error", "")
-        new_activity_id = data.get("activity_id")
+        new_activity_id = strava_id(data, "activity_id")
 
         # Treat duplicate as success — activity already exists on Strava
         if error and "duplicate" in error.lower():
