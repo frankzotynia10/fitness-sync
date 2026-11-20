@@ -5,7 +5,8 @@ def register(mcp):
 
     @mcp.tool()
     def get_todays_context() -> dict:
-        """Return today's complete snapshot: recovery signals (HRV, sleep, body battery,
+        """Return today's complete snapshot: recovery signals (HRV, sleep, body battery
+        at wake / day low / latest reading,
         training readiness, resting HR, training load/status, weight), today's nutrition
         (calories, protein, carbs, fat), sleep notes if entered in Garmin Connect,
         and whether the user has trained or ridden today.
@@ -19,7 +20,9 @@ def register(mcp):
                 g.deep_sleep_seconds,
                 g.rem_sleep_seconds,
                 g.sleep_notes,
-                g.body_battery,
+                g.body_battery_at_wake,
+                g.body_battery_low,
+                g.body_battery AS body_battery_latest,
                 g.training_readiness,
                 g.resting_hr,
                 g.acute_training_load,
