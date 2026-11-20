@@ -3,11 +3,26 @@ from db import run_query, run_query_composed, dataset_exists, get_dataset_column
 from utils import clamp_limit
 
 
+# garmin_daily.body_battery is the latest reading at sync time, not a daily value.
+# Expose it under a name that can't be mistaken for the morning number.
+_RENAMES = {"body_battery": "body_battery_latest"}
+
+
+def _col(c):
+    if c in _RENAMES:
+        return sql.SQL("{} AS {}").format(sql.Identifier(c), sql.Identifier(_RENAMES[c]))
+    return sql.Identifier(c)
+
+
 def register(mcp):
 
     @mcp.tool()
     def get_recent_garmin_daily(limit: int = 30) -> list:
-        """Return recent Garmin daily rows."""
+        """Return recent Garmin daily rows (all columns).
+
+        Body battery: use body_battery_at_wake for the morning number and
+        body_battery_low for the day's low. The plain body_battery column is the
+        latest reading at sync time, not a daily value."""
         if not dataset_exists("garmin_daily"):
             return [{"message": "garmin_daily table does not exist yet."}]
         return run_query("select * from garmin_daily order by date desc limit %s",
@@ -85,12 +100,17 @@ def register(mcp):
     @mcp.tool()
     def get_recovery_signals(days: int = 14) -> list:
         """Return recovery-focused Garmin signals: readiness, HRV, body battery,
-        respiration, SpO2, stress, sleep stages, sleep notes, body composition."""
+        respiration, SpO2, stress, sleep stages, sleep notes, body composition.
+
+        Body battery: body_battery_at_wake is the morning number to grade recovery on;
+        body_battery_low is how drained the day left you; body_battery_latest is just
+        the most recent reading when the row was synced (not a daily value)."""
         if not dataset_exists("garmin_daily"):
             return [{"message": "garmin_daily table does not exist yet."}]
         cols = get_dataset_columns("garmin_daily")
         wanted = [
-            "date", "training_readiness", "body_battery", "hrv", "resting_hr",
+            "date", "training_readiness", "hrv", "resting_hr",
+            "body_battery_at_wake", "body_battery_low", "body_battery_high", "body_battery_charged", "body_battery_drained", "body_battery",
             "respiration_avg", "spo2_avg", "spo2_min", "stress_avg", "stress_max",
             "sleep_score", "sleep_seconds", "sleep_notes", "deep_sleep_seconds",
             "light_sleep_seconds", "rem_sleep_seconds", "awake_seconds",
@@ -100,7 +120,7 @@ def register(mcp):
         available = [c for c in wanted if c in cols]
         if len(available) <= 1:
             return [{"message": "No recovery signal fields are available in garmin_daily yet."}]
-        select_sql = sql.SQL(", ").join(sql.Identifier(c) for c in available)
+        select_sql = sql.SQL(", ").join(_col(c) for c in available)
         query = sql.SQL("select {cols} from public.garmin_daily order by date desc limit {limit}").format(
             cols=select_sql, limit=sql.Literal(clamp_limit(days, 1, 180))
         )
@@ -189,7 +209,9 @@ def register(mcp):
                     ROUND((g.deep_sleep_seconds / 60.0)::numeric) AS deep_sleep_min,
                     ROUND((g.rem_sleep_seconds / 60.0)::numeric) AS rem_sleep_min,
                     g.sleep_notes,
-                    d.body_battery,
+                    g.body_battery_at_wake,
+                    g.body_battery_low,
+                    g.body_battery AS body_battery_latest,
                     d.training_load,
                     d.acute_training_load,
                     d.chronic_training_load,
@@ -277,10 +299,11 @@ def register(mcp):
             acwr_cols = [c for c in [
                 "date", "acute_training_load", "chronic_training_load",
                 "acwr_ratio", "training_status", "training_readiness",
-                "body_battery", "hrv", "recovery_time_hours",
+                "body_battery_at_wake", "body_battery_low", "body_battery",
+                "hrv", "recovery_time_hours",
             ] if c in cols]
             if len(acwr_cols) > 1:
-                select_sql = sql.SQL(", ").join(sql.Identifier(c) for c in acwr_cols)
+                select_sql = sql.SQL(", ").join(_col(c) for c in acwr_cols)
                 query = sql.SQL("""
                     SELECT {cols}
                     FROM public.garmin_daily
