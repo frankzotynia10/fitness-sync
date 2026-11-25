@@ -5,6 +5,12 @@ on:
     branches:
       - main
 
+# Only the latest push builds and deploys. A burst of merges used to fire several
+# n8n deploys at once; concurrent `docker compose up -d` runs removed containers.
+concurrency:
+  group: build-and-deploy
+  cancel-in-progress: true
+
 jobs:
   build-and-push:
     name: Build & Push Images
